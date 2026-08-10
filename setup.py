@@ -36,17 +36,27 @@ if PUBLISH_TARGET not in SUPPORTED_PUBLISH_TARGETS:
 
 
 
+def _build_prefix():
+    """Return the prefix holding the RDKit that cuik will link against.
+
+    CONDA_PREFIX, not sys.prefix: pip and uv build in an isolated virtual environment, so
+    sys.prefix points at a throwaway venv that contains no RDKit. CMAKE_PREFIX_PATH below is
+    set from the same variable, so this keeps detection and linkage in agreement.
+    """
+    return os.environ.get("CONDA_PREFIX") or sys.prefix
+
+
 def _detect_rdkit_version():
     """Return the RDKit version cuik will link against, or None if it cannot be determined.
 
     Read from the shared library's soname rather than by importing rdkit, because pip
     builds in an isolated environment where rdkit is not importable but the libraries cuik
-    compiles against are still present in the prefix.
+    compiles against are still present in the build prefix.
     """
     import glob
     import re
 
-    for lib in glob.glob(os.path.join(sys.prefix, "lib", "libRDKitRDGeneral.so.*")):
+    for lib in glob.glob(os.path.join(_build_prefix(), "lib", "libRDKitRDGeneral.so.*")):
         match = re.search(r"\.so\.\d+\.(\d{4}\.\d+\.\d+)$", lib)
         if match:
             return match.group(1)
@@ -70,7 +80,7 @@ def _rdkit_uses_cxx11_abi():
     import glob
     import subprocess
 
-    for lib in glob.glob(os.path.join(sys.prefix, "**", "libRDKit*.so*"), recursive=True):
+    for lib in glob.glob(os.path.join(_build_prefix(), "lib", "libRDKit*.so*")):
         try:
             symbols = subprocess.run(
                 ["nm", "-D", "--defined-only", lib], capture_output=True, text=True, check=True
