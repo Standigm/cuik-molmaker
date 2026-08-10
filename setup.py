@@ -46,6 +46,24 @@ def _build_prefix():
     return os.environ.get("CONDA_PREFIX") or sys.prefix
 
 
+def _detect_pip_rdkit_libdir():
+    """Return the PyPI rdkit wheel's bundled library directory, or None if RDKit is conda's.
+
+    Linking the conda RDKit into a process whose Python-level rdkit is the PyPI wheel puts two
+    RDKit builds in memory, and the conda ones are built against a newer libstdc++ than a
+    manylinux wheel assumes. When the PyPI wheel is what is installed, link against its
+    libraries instead: one RDKit in the process, and no C++ runtime newer than manylinux.
+    Headers still come from the conda librdkit-dev package, since the wheel ships none.
+    """
+    import glob
+
+    for site_packages in glob.glob(os.path.join(_build_prefix(), "lib", "python*", "site-packages")):
+        libdir = os.path.join(site_packages, "rdkit.libs")
+        if os.path.isdir(libdir) and glob.glob(os.path.join(libdir, "libRDKitGraphMol*")):
+            return libdir
+    return None
+
+
 def _detect_rdkit_version():
     """Return the RDKit version cuik will link against, or None if it cannot be determined.
 
@@ -100,6 +118,22 @@ class CMakeBuild(build_ext):
         cuikmolmaker_build_against_pip = os.getenv(
             "CUIKMOLMAKER_BUILD_AGAINST_PIP_RDKIT"
         )
+        # Fall back to detection so that a plain `pip install` picks the right RDKit without
+        # the caller having to know which one is installed.
+        if cuikmolmaker_build_against_pip is None:
+            detected_libdir = _detect_pip_rdkit_libdir()
+            if detected_libdir:
+                print(f"Detected PyPI RDKit libraries at {detected_libdir}; linking against them")
+                cuikmolmaker_build_against_pip = "1"
+                os.environ.setdefault("CUIKMOLMAKER_BUILD_AGAINST_PIP_LIBDIR", detected_libdir)
+                os.environ.setdefault(
+                    "CUIKMOLMAKER_BUILD_AGAINST_PIP_INCDIR",
+                    os.path.join(_build_prefix(), "include", "rdkit"),
+                )
+                os.environ.setdefault(
+                    "CUIKMOLMAKER_BUILD_AGAINST_PIP_BOOSTINCLUDEDIR",
+                    os.path.join(_build_prefix(), "include"),
+                )
         cmake_extra_args.extend(
             [
                 f"-DCUIKMOLMAKER_CXX11_ABI={CXX11_ABI}",

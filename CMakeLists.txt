@@ -41,6 +41,18 @@ set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
 # Don't set a global CMAKE_INSTALL_RPATH here - let target-specific settings handle it
 set(CMAKE_INSTALL_RPATH_USE_LINK_PATH FALSE)
 
+# Link the C++ runtime statically on Linux. The extension is loaded into a process that has
+# usually already imported torch, which pulls in whichever libstdc++ its own RPATH resolves
+# to -- for PyPI torch wheels, the system one. A shared object is only loaded once per
+# soname, so a build made with a newer toolchain than the host would fail at import with a
+# missing GLIBCXX version, no matter what this library's own RPATH says. Carrying the runtime
+# makes the module independent of which libstdc++ wins that race. Nothing but values crosses
+# the module boundary -- SMILES strings and RDKit pickles in, NumPy arrays out -- so there is
+# no C++ object or exception passing between the static and shared copies.
+if(UNIX AND NOT APPLE)
+  add_link_options(-static-libstdc++ -static-libgcc)
+endif()
+
 if(CUIKMOLMAKER_CXX11_ABI)
   message(STATUS "Using cxx11 ABI")
   add_compile_definitions(_GLIBCXX_USE_CXX11_ABI=1)
