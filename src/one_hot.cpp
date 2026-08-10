@@ -51,7 +51,9 @@ constexpr size_t degreeCount       = 5;
 constexpr size_t totalDegreeCount  = 6;
 constexpr size_t valenceCount      = 7;
 constexpr size_t chiralityCount    = 4;
-constexpr size_t numHydrogensCount = 5;
+// Covers 0-8 attached hydrogens; the previous cap of 5 silently saturated anything higher,
+// so [XeH6] reported 5 rather than 6.
+constexpr size_t numHydrogensCount = 9;
 constexpr size_t ringSizeCount     = 6;
 
 constexpr size_t hybridizationList[] = {
@@ -112,12 +114,14 @@ constexpr size_t atomicNumOrganicList[] = {
 constexpr size_t atomicNumOrganicCount = std::extent<decltype(atomicNumOrganicList)>::value;
 constexpr OneHotLookup<118, atomicNumOrganicCount> atomicNumOrganicLookup(atomicNumOrganicList);
 
-// RDKit::Bond::BondType are not in bondTypeList and RDKit::Bond::BondType::AROMATIC
-// will be indicated at index 3.
+// AROMATIC is listed explicitly so that it gets its own slot. Leaving it out made index 3 do
+// double duty as both "aromatic" and "anything else", so a DATIVE or UNSPECIFIED bond was
+// indistinguishable from an aromatic one; those now fall in the trailing unknown slot.
 constexpr size_t bondTypeList[] = {
   RDKit::Bond::BondType::SINGLE,
   RDKit::Bond::BondType::DOUBLE,
   RDKit::Bond::BondType::TRIPLE,
+  RDKit::Bond::BondType::AROMATIC,
 };
 constexpr size_t                          bondTypeCount = std::extent<decltype(bondTypeList)>::value;
 constexpr OneHotLookup<22, bondTypeCount> bondTypeLookup(bondTypeList);

@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 import cuik_molmaker
+from reference_layout import assert_matches_reference
 
 REACTION_MODES = [
     "REAC_DIFF",
@@ -94,15 +95,26 @@ def test_batch_reaction_featurizer(
         mode_int,
     )
 
-    np.testing.assert_allclose(
-        ref["V"],
+    assert_matches_reference(
         V,
-        err_msg=f"[{atom_featurizer_version}/{reaction_mode}] atom feats mismatch",
+        ref["V"],
+        # CGR concatenates the full atom block with a second copy whose atomic-number
+        # one-hot has been stripped.
+        [
+            (cfg["atom_onehot"], len(cfg["atom_float"])),
+            (cfg["atom_onehot"][1:], len(cfg["atom_float"])),
+        ],
+        "atom_onehot",
+        err_msg=f"[{atom_featurizer_version}/{reaction_mode}] atom feats mismatch "
+        "outside the widened blocks",
     )
-    np.testing.assert_allclose(
-        ref["E"],
+    assert_matches_reference(
         E,
-        err_msg=f"[{atom_featurizer_version}/{reaction_mode}] bond feats mismatch",
+        ref["E"],
+        [(cfg["bond"], 0), (cfg["bond"], 0)],
+        "bond",
+        err_msg=f"[{atom_featurizer_version}/{reaction_mode}] bond feats mismatch "
+        "outside the widened blocks",
     )
     np.testing.assert_allclose(
         ref["edge_index"],

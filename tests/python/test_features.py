@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 import cuik_molmaker
+from reference_layout import assert_matches_reference
 
 
 # Helper function for pytests
@@ -54,9 +55,8 @@ def test_mol_featurizer(test_data_path, atom_featurizer_version):
     atom_float_property_list = cuik_molmaker.atom_float_feature_names_to_array(
         ["aromatic", "mass"]
     )
-    bond_property_list = cuik_molmaker.bond_feature_names_to_array(
-        ["is-null", "bond-type-onehot", "conjugated", "in-ring", "stereo"]
-    )
+    bond_feature_list = ["is-null", "bond-type-onehot", "conjugated", "in-ring", "stereo"]
+    bond_property_list = cuik_molmaker.bond_feature_names_to_array(bond_feature_list)
 
     explicit_H, offset_carbon, duplicate_edges, add_self_loop = (
         False,
@@ -84,16 +84,19 @@ def test_mol_featurizer(test_data_path, atom_featurizer_version):
         )
         atom_feats, bond_feats, edge_index, rev_edge_index, _ = all_feats
 
-        np.testing.assert_allclose(
-            features[0],
+        assert_matches_reference(
             atom_feats,
-            err_msg=f"{smiles} atom feats diff: {np.abs(features[0] - atom_feats)}",
+            features[0],
+            [(atom_feature_list, 2)],  # 2 float features: aromatic, mass
+            "atom_onehot",
+            err_msg=f"{smiles} atom feats differ outside the widened blocks",
         )
-        np.testing.assert_allclose(
-            features[1],
+        assert_matches_reference(
             bond_feats,
-            err_msg=f"{smiles} bond feats diff: "
-            f"{np.abs(features[1] - bond_feats).sum()}",
+            features[1],
+            [(bond_feature_list, 0)],
+            "bond",
+            err_msg=f"{smiles} bond feats differ outside the widened blocks",
         )
         np.testing.assert_allclose(
             features[2],
@@ -222,9 +225,8 @@ def test_batch_mol_featurizer(test_data_path, atom_featurizer_version):
     atom_float_property_list = cuik_molmaker.atom_float_feature_names_to_array(
         ["aromatic", "mass"]
     )
-    bond_property_list = cuik_molmaker.bond_feature_names_to_array(
-        ["is-null", "bond-type-onehot", "conjugated", "in-ring", "stereo"]
-    )
+    bond_feature_list = ["is-null", "bond-type-onehot", "conjugated", "in-ring", "stereo"]
+    bond_property_list = cuik_molmaker.bond_feature_names_to_array(bond_feature_list)
 
     explicit_H, offset_carbon, duplicate_edges, add_self_loop = (
         False,
@@ -251,15 +253,19 @@ def test_batch_mol_featurizer(test_data_path, atom_featurizer_version):
     )
     atom_feats, bond_feats, edge_index, rev_edge_index, batch = all_feats
 
-    np.testing.assert_allclose(
-        features_ref["V"],
+    assert_matches_reference(
         atom_feats,
-        err_msg=f"atom feats diff: {np.abs(features_ref['V'] - atom_feats).sum()}",
+        features_ref["V"],
+        [(atom_feature_list, 2)],  # 2 float features: aromatic, mass
+        "atom_onehot",
+        err_msg="atom feats differ outside the widened blocks",
     )
-    np.testing.assert_allclose(
-        features_ref["E"],
+    assert_matches_reference(
         bond_feats,
-        err_msg=f"bond feats diff: {np.abs(features_ref['E'] - bond_feats).sum()}",
+        features_ref["E"],
+        [(bond_feature_list, 0)],
+        "bond",
+        err_msg="bond feats differ outside the widened blocks",
     )
     np.testing.assert_allclose(
         features_ref["edge_index"],
