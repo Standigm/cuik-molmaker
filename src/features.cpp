@@ -18,18 +18,24 @@
 #include <GraphMol/new_canon.h>
 #include <GraphMol/ROMol.h>
 #include <GraphMol/RWMol.h>
+#include <GraphMol/MolPickler.h>
+
+#include <cstring>
 #include <GraphMol/SmilesParse/SmilesParse.h>
 #include <RDGeneral/types.h>
 
 #include <unordered_map>
 
-// This is called by `mol_featurizer` and `batch_mol_featurizer` to parse the SMILES string into an RWMol and
-// cache some data about the atoms and bonds.
-static GraphData read_graph(const std::string& smiles_string, bool explicit_H) {
-  std::unique_ptr<RDKit::RWMol> mol{parse_mol(smiles_string, explicit_H)};
-
+// Caches the atom and bond data cuik needs from an already-parsed RWMol, taking ownership
+// of it. Both the SMILES and the RDKit-binary entry points below delegate here, so the two
+// only differ in how the molecule is obtained.
+static GraphData graph_from_mol(std::unique_ptr<RDKit::RWMol> mol) {
   if (!mol) {
-    return GraphData{0, std::unique_ptr<CompactAtom[]>(), 0, std::unique_ptr<CompactBond[]>(), std::move(mol)};
+    // Substitute an empty molecule rather than propagating null. Several float features
+    // call methods on the molecule (RingInfo, for one) before looping over its zero atoms,
+    // so a null here faults instead of yielding the intended empty result.
+    mol = std::make_unique<RDKit::RWMol>();
+    RDKit::MolOps::findSSSR(*mol);
   }
 
   const size_t num_atoms = mol->getNumAtoms();
@@ -150,6 +156,46 @@ static GraphData read_graph(const std::string& smiles_string, bool explicit_H) {
 
   // Return a GraphData structure, taking ownership of the atom and bond data arrays.
   return GraphData{num_atoms, std::move(atoms), num_bonds, std::move(bonds), std::move(mol)};
+}
+
+// This is called by `mol_featurizer` and `batch_mol_featurizer` to parse the SMILES string into an RWMol and
+// cache some data about the atoms and bonds.
+static GraphData read_graph(const std::string& smiles_string, bool explicit_H) {
+  return graph_from_mol(std::unique_ptr<RDKit::RWMol>{parse_mol(smiles_string, explicit_H)});
+}
+
+// This is called by `batch_mol_featurizer_from_binary` to restore an RWMol from the bytes
+// produced by RDKit's `Mol.ToBinary()`, instead of parsing a SMILES string.
+//
+// Unlike a SMILES round-trip this preserves the molecule exactly as the caller holds it,
+// including atom order and the neighbour-relative chiral tags that `Atom::getChiralTag`
+// reports. Callers that must reproduce per-atom features of an existing RWMol therefore
+// need this entry point; a SMILES round-trip rewrites bond ordering and can flip those
+// tags while preserving the chemistry.
+static GraphData read_graph_from_binary(const std::string& pickle) {
+  // Reject anything that is not an RDKit pickle before handing it to the unpickler:
+  // MolPickler trusts the stream and reads lengths straight out of it, so random bytes can
+  // fault inside RDKit rather than raising. The stream opens with the endian marker.
+  std::int32_t endian_marker = 0;
+  if (pickle.size() < sizeof(endian_marker)) {
+    return graph_from_mol(nullptr);
+  }
+  std::memcpy(&endian_marker, pickle.data(), sizeof(endian_marker));
+  if (endian_marker != RDKit::MolPickler::endianId) {
+    return graph_from_mol(nullptr);
+  }
+
+  auto mol = std::make_unique<RDKit::RWMol>();
+  try {
+    RDKit::MolPickler::molFromPickle(pickle, *mol);
+  } catch (...) {
+    return graph_from_mol(nullptr);
+  }
+  // Ring membership is read directly from RingInfo, which older pickles may omit.
+  if (!mol->getRingInfo()->isInitialized()) {
+    RDKit::MolOps::findSSSR(*mol);
+  }
+  return graph_from_mol(std::move(mol));
 }
 
 // This is a structure for managing the adjacency data (CSR format)
@@ -512,6 +558,57 @@ size_t compute_bond_dim(const py::array_t<int64_t>& bond_property_list) {
   return single_bond_float_count;
 }
 
+static std::vector<py::array> featurize_graph_list(std::vector<GraphData>      graph_list,
+                                                   const py::array_t<int64_t>& atom_property_list_onehot,
+                                                   const py::array_t<int64_t>& atom_property_list_float,
+                                                   const py::array_t<int64_t>& bond_property_list,
+                                                   bool                        offset_carbon,
+                                                   bool                        duplicate_edges,
+                                                   bool                        add_self_loop);
+
+std::vector<py::array> batch_mol_featurizer(const std::vector<std::string>& smiles_list,
+                                           const py::array_t<int64_t>&     atom_property_list_onehot,
+                                           const py::array_t<int64_t>&     atom_property_list_float,
+                                           const py::array_t<int64_t>&     bond_property_list,
+                                           bool                            explicit_H,
+                                           bool                            offset_carbon,
+                                           bool                            duplicate_edges,
+                                           bool                            add_self_loop) {
+  std::vector<GraphData> graph_list;
+  graph_list.reserve(smiles_list.size());
+  for (const auto& smiles : smiles_list) {
+    graph_list.push_back(read_graph(smiles, explicit_H));
+  }
+  return featurize_graph_list(std::move(graph_list),
+                              atom_property_list_onehot,
+                              atom_property_list_float,
+                              bond_property_list,
+                              offset_carbon,
+                              duplicate_edges,
+                              add_self_loop);
+}
+
+std::vector<py::array> batch_mol_featurizer_from_binary(const std::vector<py::bytes>& mol_binaries,
+                                                        const py::array_t<int64_t>&   atom_property_list_onehot,
+                                                        const py::array_t<int64_t>&   atom_property_list_float,
+                                                        const py::array_t<int64_t>&   bond_property_list,
+                                                        bool                          offset_carbon,
+                                                        bool                          duplicate_edges,
+                                                        bool                          add_self_loop) {
+  std::vector<GraphData> graph_list;
+  graph_list.reserve(mol_binaries.size());
+  for (const auto& blob : mol_binaries) {
+    graph_list.push_back(read_graph_from_binary(std::string(blob)));
+  }
+  return featurize_graph_list(std::move(graph_list),
+                              atom_property_list_onehot,
+                              atom_property_list_float,
+                              bond_property_list,
+                              offset_carbon,
+                              duplicate_edges,
+                              add_self_loop);
+}
+
 std::vector<py::array> mol_featurizer(const std::string&          smiles_string,
                                       const py::array_t<int64_t>& atom_property_list_onehot,
                                       const py::array_t<int64_t>& atom_property_list_float,
@@ -530,27 +627,22 @@ std::vector<py::array> mol_featurizer(const std::string&          smiles_string,
                               add_self_loop);
 }
 
-std::vector<py::array> batch_mol_featurizer(const std::vector<std::string>& smiles_list,
-                                            const py::array_t<int64_t>&     atom_property_list_onehot,
-                                            const py::array_t<int64_t>&     atom_property_list_float,
-                                            const py::array_t<int64_t>&     bond_property_list,
-                                            bool                            explicit_H,
-                                            bool                            offset_carbon,
-                                            bool                            duplicate_edges,
-                                            bool                            add_self_loop) {
-  const size_t n_smiles = smiles_list.size();
-
-  // Create graphs
-  std::vector<GraphData> graph_list;
-  graph_list.reserve(smiles_list.size());
+// Shared tail of the batch featurizers. Everything from here on depends only on the parsed
+// graphs, so the SMILES and RDKit-binary entry points differ solely in how `graph_list` is
+// built and are guaranteed to produce identical output for identical molecules.
+static std::vector<py::array> featurize_graph_list(std::vector<GraphData>      graph_list,
+                                                   const py::array_t<int64_t>& atom_property_list_onehot,
+                                                   const py::array_t<int64_t>& atom_property_list_float,
+                                                   const py::array_t<int64_t>& bond_property_list,
+                                                   bool                        offset_carbon,
+                                                   bool                        duplicate_edges,
+                                                   bool                        add_self_loop) {
+  const size_t n_smiles = graph_list.size();
 
   size_t total_num_atoms = 0, total_num_bonds = 0;
-
-  for (const auto& smiles : smiles_list) {
-    GraphData igraph = read_graph(smiles, explicit_H);
-    total_num_atoms += igraph.num_atoms;
-    total_num_bonds += igraph.num_bonds;
-    graph_list.push_back(std::move(igraph));
+  for (const auto& graph : graph_list) {
+    total_num_atoms += graph.num_atoms;
+    total_num_bonds += graph.num_bonds;
   }
 
   // Compute atom dimension

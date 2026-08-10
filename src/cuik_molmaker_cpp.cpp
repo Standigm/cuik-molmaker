@@ -57,6 +57,12 @@ PYBIND11_MODULE(cuik_molmaker_cpp, m) {
     "batch_mol_featurizer",
     &batch_mol_featurizer,
     "Accepts a list of SMILES strings and returns a list of NumPy arrays representing atom and bond features of the molecules.");
+  m.def("batch_mol_featurizer_from_binary",
+        &batch_mol_featurizer_from_binary,
+        "Accepts a list of RDKit binary mol pickles (Mol.ToBinary()) and returns the same arrays as "
+        "batch_mol_featurizer. Unlike the SMILES entry point this preserves the caller's exact atom "
+        "and bond ordering, and therefore the neighbour-relative chiral tags.");
+
   m.def("list_all_atom_onehot_features",
         &list_all_atom_onehot_features,
         "Returns a list of all atom one-hot features.");

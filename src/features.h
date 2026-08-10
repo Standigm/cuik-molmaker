@@ -473,6 +473,26 @@ CUIK_EXPORT std::vector<py::array> batch_mol_featurizer(const std::vector<std::s
                                                         bool                            duplicate_edges,
                                                         bool                            add_self_loop);
 
+//! `batch_mol_featurizer_from_binary` featurizes molecules supplied as RDKit binary
+//! pickles (`Mol.ToBinary()`) rather than SMILES strings.
+//!
+//! Use this when the caller already holds RWMol objects and needs features that match those
+//! exact objects. A SMILES round-trip preserves chemistry but rewrites atom and bond
+//! ordering, which changes the neighbour-relative chiral tag reported by
+//! `Atom::getChiralTag`; restoring the atom order does not restore the tag. The binary
+//! pickle preserves the molecule as-is, so no reordering or tag correction is needed.
+//!
+//! @param mol_binaries Molecules serialised with RDKit's `Mol.ToBinary()`
+//! @return The same five arrays as `batch_mol_featurizer`, in the same layout.
+CUIK_EXPORT std::vector<py::array> batch_mol_featurizer_from_binary(
+  const std::vector<py::bytes>& mol_binaries,
+  const py::array_t<int64_t>&   atom_property_list_onehot,
+  const py::array_t<int64_t>&   atom_property_list_float,
+  const py::array_t<int64_t>&   bond_property_list,
+  bool                          offset_carbon,
+  bool                          duplicate_edges,
+  bool                          add_self_loop);
+
 //! Parses one side of a reaction SMILES into an RWMol, preserving atom-map numbers.
 //! Unlike parse_mol, this function does NOT clear atom-map numbers and does NOT reorder atoms.
 //! @param keep_h  If true, SmilesParserParams.removeHs = false (retains explicit [H:n] atoms)
