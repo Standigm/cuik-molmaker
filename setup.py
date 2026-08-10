@@ -10,7 +10,7 @@ import subprocess
 import sys
 import sysconfig
 
-from setuptools import find_packages, setup
+from setuptools import Extension, find_packages, setup
 from setuptools.command.build_ext import build_ext
 
 # Version for the cuik_molmaker package (cuik_molmaker_pin uses RDKIT_VERSION instead).
@@ -33,6 +33,53 @@ if PUBLISH_TARGET not in SUPPORTED_PUBLISH_TARGETS:
         f"Must be one of {SUPPORTED_PUBLISH_TARGETS}."
     )
     sys.exit(1)
+
+
+
+def _detect_rdkit_version():
+    """Return the RDKit version cuik will link against, or None if it cannot be determined.
+
+    Read from the shared library's soname rather than by importing rdkit, because pip
+    builds in an isolated environment where rdkit is not importable but the libraries cuik
+    compiles against are still present in the prefix.
+    """
+    import glob
+    import re
+
+    for lib in glob.glob(os.path.join(sys.prefix, "lib", "libRDKitRDGeneral.so.*")):
+        match = re.search(r"\.so\.\d+\.(\d{4}\.\d+\.\d+)$", lib)
+        if match:
+            return match.group(1)
+    try:
+        import rdkit
+
+        return rdkit.__version__
+    except ImportError:
+        return None
+
+
+def _rdkit_uses_cxx11_abi():
+    """Report whether the installed RDKit was built with the C++11 std::string ABI.
+
+    Linking cuik with the other ABI produces a module that imports but cannot resolve
+    RDKit's symbols, so this is detected rather than defaulted. libstdc++ tags the names of
+    symbols whose type involves std::__cxx11::string with `B5cxx11`; any such export is
+    conclusive, and looking for any of them rather than one named symbol keeps the check
+    working across RDKit releases that move symbols between libraries.
+    """
+    import glob
+    import subprocess
+
+    for lib in glob.glob(os.path.join(sys.prefix, "**", "libRDKit*.so*"), recursive=True):
+        try:
+            symbols = subprocess.run(
+                ["nm", "-D", "--defined-only", lib], capture_output=True, text=True, check=True
+            ).stdout
+        except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+            continue
+        if "B5cxx11" in symbols:
+            return True
+    return False
 
 
 class CMakeBuild(build_ext):
@@ -140,34 +187,59 @@ class CMakeBuild(build_ext):
         # Call the original build_ext to copy .so files, etc.
         super().run()
 
+        self._install_artifacts()
 
+    def build_extension(self, ext):
+        """Skip setuptools' own compilation; CMake has already produced the real modules."""
+
+    def _install_artifacts(self):
+        """Place the freshly built extension and core library where the wheel will find them.
+
+        Done here rather than at module scope so that a one-shot `pip install` works: setup.py
+        is executed for metadata before any build has run, so a module-level check can only
+        ever see a stale artifact or none at all. The files are written both into the source
+        package -- for editable and in-place builds -- and into build_lib, because build_py
+        has already staged the package by the time the extension exists.
+        """
+        artifacts = (
+            (os.path.join("build", f"cuik_molmaker_cpp.{so_suffix}"), dest_dir, "compiled extension"),
+            (lib_file, lib_dir, "shared library"),
+        )
+        roots = [""]
+        if getattr(self, "build_lib", None):
+            roots.append(self.build_lib)
+
+        for source, destination, what in artifacts:
+            if not os.path.exists(source):
+                raise FileNotFoundError(f"{what} missing after the CMake build: {source}")
+            for root in roots:
+                target = os.path.join(root, destination) if root else destination
+                os.makedirs(target, exist_ok=True)
+                print(f"Copying {what} to {target}")
+                shutil.copy2(source, target)
+
+
+# Release builds pin these explicitly so the wheel is tagged for one RDKit and Python
+# combination. A plain `pip install` has no such wheel to tag, so fall back to whatever the
+# build environment provides; that is also the only combination the result can be used with.
 if RDKIT_VERSION is None:
-    print("Error: RDKit version is not set.")
-    print("Please specify it as follows using environment variables:")
+    RDKIT_VERSION = _detect_rdkit_version()
+if RDKIT_VERSION is None:
+    print("Error: could not determine the RDKit version to build against.")
+    print("Specify it explicitly:")
     print(
-        "RDKIT_VERSION=2024.03.4 PYTHON_VERSION=3.11 CUIKMOLMAKER_CXX11_ABI=ON "
+        "RDKIT_VERSION=2026.03.4 PYTHON_VERSION=3.13 CUIKMOLMAKER_CXX11_ABI=ON "
         "python setup.py build_ext --inplace"
     )
     sys.exit(1)
 
 if PYTHON_VERSION is None:
-    print("Error: Python version is not set.")
-    print("Please specify it as follows using environment variables:")
-    print(
-        "RDKIT_VERSION=2024.03.4 PYTHON_VERSION=3.11 CUIKMOLMAKER_CXX11_ABI=ON "
-        "python setup.py build_ext --inplace"
-    )
-    sys.exit(1)
+    PYTHON_VERSION = f"{sys.version_info.major}.{sys.version_info.minor}"
 
 if CXX11_ABI is None:
-    print("Error: CXX11_ABI is not set.")
-    print("CXX11_ABI can be either ON or OFF.")
-    print("Please specify it as follows using environment variables:")
-    print(
-        "RDKIT_VERSION=2024.03.4 PYTHON_VERSION=3.11 CUIKMOLMAKER_CXX11_ABI=ON "
-        "python setup.py build_ext --inplace"
-    )
-    sys.exit(1)
+    # RDKit builds that expose std::string in their ABI are the ones cuik links against, so
+    # match the ABI of the RDKit actually installed rather than guessing a default.
+    CXX11_ABI = "ON" if _rdkit_uses_cxx11_abi() else "OFF"
 
 # Update setup.cfg with the Python tag
 PYTHON_DIGIT_ONLY_VERSION = PYTHON_VERSION.replace(".", "")
@@ -304,6 +376,10 @@ setup(
         "cuik_molmaker.utils": ["*.py"],  # Include Python files
     },
     include_package_data=True,
+    # CMakeBuild ignores this and drives CMake instead, but setuptools only runs build_ext
+    # when the distribution declares an extension, and without that a `pip install` produces
+    # a wheel with no compiled artifacts in it.
+    ext_modules=[Extension("cuik_molmaker._cmake_placeholder", sources=[])],
     cmdclass={
         "build_ext": CMakeBuild,
     },
@@ -343,28 +419,3 @@ setup(
         ],
     },
 )
-
-# Check if compiled extension exists, display helpful message if not
-so_file = os.path.join("build", f"cuik_molmaker_cpp.{so_suffix}")
-print(f"Looking for compiled extension at: {so_file}")
-
-if os.path.exists(so_file):
-    print(f"Found compiled extension, copying to {dest_dir}")
-    shutil.copy2(so_file, dest_dir)
-else:
-    print(
-        "WARNING: Compiled extension not found."
-        "You need to build the C++ extension first."
-    )
-    sys.exit(1)
-
-# Check for the shared library
-if os.path.exists(lib_file):
-    print(f"Found shared library, copying to {lib_dir}")
-    shutil.copy2(lib_file, lib_dir)
-else:
-    print(
-        "WARNING: Shared library not found. You need to build the C++ extension first."
-    )
-    print("Run cmake and make in the build directory first.")
-    sys.exit(1)

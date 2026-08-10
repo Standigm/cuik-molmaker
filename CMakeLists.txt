@@ -207,7 +207,7 @@ add_library(cuik_molmaker_core SHARED
 
 # Add include directories for core library
 target_include_directories(cuik_molmaker_core PUBLIC
-    ${RDKIT_INCLUDE_DIRS}
+    ${RDKit_INCLUDE_DIRS}
     ${pybind11_INCLUDE_DIRS}
     ${PYTHON_INCLUDE_DIRS}
     ${Boost_INCLUDE_DIRS}
