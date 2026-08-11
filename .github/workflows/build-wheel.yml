@@ -97,11 +97,15 @@ jobs:
           print("wheel featurizes correctly in a prefix with no toolchain")
           PY
 
-      - name: Test
+      - name: Test the wheel as installed
         shell: bash -el {0}
         run: |
-          pip install pytest
-          pytest tests/python -q
+          set -euo pipefail
+          /tmp/probe/bin/pip install --quiet pytest
+          # From /tmp against an absolute path, so the suite exercises the installed wheel
+          # rather than the build tree the checkout still holds.
+          cd /tmp
+          /tmp/probe/bin/python -m pytest "$GITHUB_WORKSPACE/tests/python" -q
 
       - uses: actions/upload-artifact@v4
         with:
