@@ -78,6 +78,9 @@ jobs:
           # consumers install without a toolchain, so the job fails if it does not hold.
           python -m venv /tmp/probe
           /tmp/probe/bin/pip install --quiet "rdkit==$(echo "$RDKIT_VERSION" | sed 's/\.0/./')" numpy pandas "$wheel"
+          # From /tmp, so that the source checkout's own cuik_molmaker directory -- which the
+          # build writes artifacts into -- cannot shadow the installed package.
+          cd /tmp
           /tmp/probe/bin/python - <<'PY'
           from rdkit import Chem
           import cuik_molmaker
