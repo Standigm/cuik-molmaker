@@ -1,0 +1,105 @@
+# Builds the wheel consumers install, so that they need no build toolchain of their own.
+#
+# The wheel links the PyPI RDKit rather than conda's, which is what keeps its C++ runtime
+# requirement at the manylinux level and leaves a single RDKit in the importing process.
+# Headers still come from conda -- the PyPI wheel ships none, and rdkit-headers on PyPI lags
+# the library releases -- but that is confined to this job rather than to every install.
+name: build wheel
+
+on:
+  workflow_dispatch:
+    inputs:
+      rdkit_version:
+        description: RDKit version to build and link against
+        default: "2026.03.4"
+      python_version:
+        description: Python version to build for
+        default: "3.13"
+  push:
+    tags:
+      - "v*"
+
+env:
+  RDKIT_VERSION: ${{ inputs.rdkit_version || '2026.03.4' }}
+  PYTHON_VERSION: ${{ inputs.python_version || '3.13' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Provision headers and toolchain
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: build
+          create-args: >-
+            python=${{ env.PYTHON_VERSION }}
+            librdkit-dev=${{ env.RDKIT_VERSION }}
+            libboost-devel
+            eigen
+            cmake
+            cxx-compiler
+            patchelf
+            pybind11
+          init-shell: bash
+
+      - name: Install the RDKit the wheel will link
+        shell: bash -el {0}
+        run: |
+          # PyPI numbering drops the leading zero: 2026.03.4 -> 2026.3.4
+          pip install "rdkit==$(echo "$RDKIT_VERSION" | sed 's/\.0/./')" numpy
+
+      - name: Build
+        shell: bash -el {0}
+        run: pip wheel --no-build-isolation --no-deps -w dist .
+
+      - name: Verify the wheel is self-contained
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          wheel=$(ls dist/*.whl)
+
+          # A prefix with the RDKit wheel and nothing else: no compiler, headers or boost.
+          python -m venv --without-pip /tmp/probe
+          micromamba run -n build python -m pip install --target /tmp/site \
+            "rdkit==$(echo "$RDKIT_VERSION" | sed 's/\.0/./')" numpy pandas "$wheel"
+
+          core=$(ls /tmp/site/cuik_molmaker/lib/libcuik_molmaker_core.so)
+          echo "RUNPATH: $(patchelf --print-rpath "$core")"
+          patchelf --print-rpath "$core" | tr ':' '\n' | grep -v '^\$ORIGIN' | grep . \
+            && { echo "non-relocatable RUNPATH entry"; exit 1; } || true
+          readelf -d "$core" | grep -q '(RPATH)' && { echo "DT_RPATH must not be used"; exit 1; } || true
+
+          highest=$(objdump -T "$core" | grep -oP 'GLIBCXX_\K[0-9.]+' | sort -V | tail -1)
+          echo "highest GLIBCXX required: ${highest:-none}"
+
+          PYTHONPATH=/tmp/site micromamba run -n build python - <<'PY'
+          from rdkit import Chem
+          import cuik_molmaker
+          onehot = cuik_molmaker.atom_onehot_feature_names_to_array(["chirality"])
+          floats = cuik_molmaker.atom_float_feature_names_to_array(["atomic-number"])
+          bonds = cuik_molmaker.bond_feature_names_to_array(["bond-type-onehot"])
+          atoms, edges, *_ = cuik_molmaker.batch_mol_featurizer_from_binary(
+              [Chem.MolFromSmiles("c1ccccc1O").ToBinary()], onehot, floats, bonds, False, True, False
+          )
+          assert atoms.shape[0] == 7 and edges.shape[0] == 14
+          print("wheel featurizes correctly with no toolchain present")
+          PY
+
+      - name: Test
+        shell: bash -el {0}
+        run: |
+          pip install pytest
+          pytest tests/python -q
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cuik-molmaker-py${{ env.PYTHON_VERSION }}-rdkit${{ env.RDKIT_VERSION }}
+          path: dist/*.whl
+
+      - name: Publish on tag
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.whl
