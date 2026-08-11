@@ -62,31 +62,34 @@ jobs:
           set -euo pipefail
           wheel=$(ls dist/*.whl)
 
-          # A prefix with the RDKit wheel and nothing else: no compiler, headers or boost.
-          python -m venv --without-pip /tmp/probe
-          micromamba run -n build python -m pip install --target /tmp/site \
-            "rdkit==$(echo "$RDKIT_VERSION" | sed 's/\.0/./')" numpy pandas "$wheel"
+          core=$(python -c "import zipfile,sys; print([n for n in zipfile.ZipFile('$wheel').namelist() if n.endswith('libcuik_molmaker_core.so')][0])")
+          python -c "import zipfile; zipfile.ZipFile('$wheel').extractall('/tmp/unpacked')"
+          echo "RUNPATH: $(patchelf --print-rpath /tmp/unpacked/$core)"
+          if patchelf --print-rpath /tmp/unpacked/$core | tr ':' '\n' | grep -v '^\$ORIGIN' | grep -q .; then
+            echo "non-relocatable RUNPATH entry"; exit 1
+          fi
+          if readelf -d /tmp/unpacked/$core | grep -q '(RPATH)'; then
+            echo "DT_RPATH must not be used"; exit 1
+          fi
+          echo "highest GLIBCXX required: $(objdump -T /tmp/unpacked/$core | grep -oP 'GLIBCXX_\K[0-9.]+' | sort -V | tail -1)"
 
-          core=$(ls /tmp/site/cuik_molmaker/lib/libcuik_molmaker_core.so)
-          echo "RUNPATH: $(patchelf --print-rpath "$core")"
-          patchelf --print-rpath "$core" | tr ':' '\n' | grep -v '^\$ORIGIN' | grep . \
-            && { echo "non-relocatable RUNPATH entry"; exit 1; } || true
-          readelf -d "$core" | grep -q '(RPATH)' && { echo "DT_RPATH must not be used"; exit 1; } || true
-
-          highest=$(objdump -T "$core" | grep -oP 'GLIBCXX_\K[0-9.]+' | sort -V | tail -1)
-          echo "highest GLIBCXX required: ${highest:-none}"
-
-          PYTHONPATH=/tmp/site micromamba run -n build python - <<'PY'
+          # A plain virtual environment holding the RDKit wheel and this one, and nothing
+          # else: no compiler, no RDKit headers, no Boost. This is the property that lets
+          # consumers install without a toolchain, so the job fails if it does not hold.
+          python -m venv /tmp/probe
+          /tmp/probe/bin/pip install --quiet "rdkit==$(echo "$RDKIT_VERSION" | sed 's/\.0/./')" numpy pandas "$wheel"
+          /tmp/probe/bin/python - <<'PY'
           from rdkit import Chem
           import cuik_molmaker
+
           onehot = cuik_molmaker.atom_onehot_feature_names_to_array(["chirality"])
           floats = cuik_molmaker.atom_float_feature_names_to_array(["atomic-number"])
           bonds = cuik_molmaker.bond_feature_names_to_array(["bond-type-onehot"])
           atoms, edges, *_ = cuik_molmaker.batch_mol_featurizer_from_binary(
               [Chem.MolFromSmiles("c1ccccc1O").ToBinary()], onehot, floats, bonds, False, True, False
           )
-          assert atoms.shape[0] == 7 and edges.shape[0] == 14
-          print("wheel featurizes correctly with no toolchain present")
+          assert atoms.shape[0] == 7 and edges.shape[0] == 14, (atoms.shape, edges.shape)
+          print("wheel featurizes correctly in a prefix with no toolchain")
           PY
 
       - name: Test
