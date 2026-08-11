@@ -36,6 +36,62 @@ if PUBLISH_TARGET not in SUPPORTED_PUBLISH_TARGETS:
 
 
 
+def _strip_absolute_runpath_entries(artifacts):
+    """Drop absolute directories from each artifact's RUNPATH, keeping the $ORIGIN entries.
+
+    The compiler wrapper appends the build prefix even when it is not in LDFLAGS. Ordering
+    already makes it unreachable -- the $ORIGIN entries come first and resolve inside
+    whichever prefix the artifact is installed into -- but leaving it means a wheel records
+    where it was built, so a machine that still has that path can satisfy a lookup from it if
+    a relative entry ever fails to resolve.
+
+    Best effort: patchelf is not required to build, and without it the artifact is still
+    correct by ordering.
+    """
+    if shutil.which("patchelf") is None:
+        print("patchelf not found; leaving RUNPATH as linked (still $ORIGIN-first)")
+        return
+
+    for artifact in artifacts:
+        if not os.path.exists(artifact):
+            continue
+        try:
+            current = subprocess.run(
+                ["patchelf", "--print-rpath", artifact], capture_output=True, text=True, check=True
+            ).stdout.strip()
+        except subprocess.CalledProcessError:
+            continue
+        relative = [entry for entry in current.split(":") if entry.startswith("$ORIGIN")]
+        if not relative or len(relative) == len(current.split(":")):
+            continue
+        subprocess.check_call(["patchelf", "--set-rpath", ":".join(relative), artifact])
+        print(f"RUNPATH for {os.path.basename(artifact)}: {current} -> {':'.join(relative)}")
+
+
+def _strip_absolute_rpath_from_ldflags():
+    """Remove -Wl,-rpath,<abs> entries that conda's compiler activation exports.
+
+    Those bake the build prefix into the artifact. A wheel built in one prefix and installed
+    into another -- which uv does from its cache, hard-linking the identical file -- would
+    then load its RDKit from the prefix it was built in, regardless of what the second
+    environment activates. The $ORIGIN entries set per target already cover every directory
+    the absolute one pointed at.
+
+    -rpath-link is left alone: it affects only how the linker resolves transitive
+    dependencies, and embeds nothing.
+    """
+    import re
+
+    ldflags = os.environ.get("LDFLAGS")
+    if not ldflags:
+        return
+    stripped = re.sub(r"-Wl,-rpath,[^\s]+", "", ldflags)
+    stripped = re.sub(r"-Wl,--disable-new-dtags", "", stripped)
+    if stripped != ldflags:
+        print(f"Stripping absolute rpath entries from LDFLAGS: {ldflags!r} -> {stripped!r}")
+        os.environ["LDFLAGS"] = stripped
+
+
 def _build_prefix():
     """Return the prefix holding the RDKit that cuik will link against.
 
@@ -112,6 +168,7 @@ def _rdkit_uses_cxx11_abi():
 
 class CMakeBuild(build_ext):
     def run(self):
+        _strip_absolute_rpath_from_ldflags()
 
         # Detect if we're doing an install against pip rdkit
         cmake_extra_args = []
@@ -261,6 +318,8 @@ class CMakeBuild(build_ext):
                 os.makedirs(target, exist_ok=True)
                 print(f"Copying {what} to {target}")
                 shutil.copy2(source, target)
+                if platform.system() == "Linux":
+                    _strip_absolute_runpath_entries([os.path.join(target, os.path.basename(source))])
 
 
 # Release builds pin these explicitly so the wheel is tagged for one RDKit and Python

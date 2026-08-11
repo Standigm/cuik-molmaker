@@ -41,6 +41,14 @@ set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
 # Don't set a global CMAKE_INSTALL_RPATH here - let target-specific settings handle it
 set(CMAKE_INSTALL_RPATH_USE_LINK_PATH FALSE)
 
+if(UNIX AND NOT APPLE)
+  # Emit DT_RUNPATH rather than DT_RPATH. DT_RPATH is searched before LD_LIBRARY_PATH and
+  # cannot be overridden, so an environment could not redirect the loader even deliberately.
+  # setup.py strips the absolute -Wl,-rpath entry conda's compiler activation exports, which
+  # has to happen before CMake caches the linker flags from the environment.
+  add_link_options(-Wl,--enable-new-dtags)
+endif()
+
 if(CUIKMOLMAKER_CXX11_ABI)
   message(STATUS "Using cxx11 ABI")
   add_compile_definitions(_GLIBCXX_USE_CXX11_ABI=1)
