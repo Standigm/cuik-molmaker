@@ -235,13 +235,25 @@ if(APPLE)
         ${PYTHON_LIBRARIES} # PYTHON_LIBRARIES needed for MacOS
         ${Boost_LIBRARIES}
     )
-else()
-    message(STATUS "Linking order: Linux or Windows")
+elseif(WIN32)
+    message(STATUS "Linking order: Windows")
     target_link_libraries(cuik_molmaker_core PUBLIC
         ${Boost_LIBRARIES}
         ${RDKit_LIBS}
         ${Python_LIBRARIES}
     )
+else()
+    message(STATUS "Linking order: Linux")
+    # Python's symbols are deliberately left undefined: an extension is loaded into an
+    # interpreter that already provides them. Linking libpython instead records a
+    # NEEDED entry that only resolves where that library happens to sit on the loader
+    # path, which ties the artifact to the kind of prefix it was built in -- a virtual
+    # environment or system interpreter could not load it.
+    target_link_libraries(cuik_molmaker_core PUBLIC
+        ${Boost_LIBRARIES}
+        ${RDKit_LIBS}
+    )
+    target_link_options(cuik_molmaker_core PRIVATE "-Wl,--allow-shlib-undefined")
 endif()
 
 # On macOS, allow undefined symbols for Python C API functions
