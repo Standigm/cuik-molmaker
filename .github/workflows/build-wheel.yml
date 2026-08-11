@@ -73,15 +73,18 @@ jobs:
           fi
           echo "highest GLIBCXX required: $(objdump -T /tmp/unpacked/$core | grep -oP 'GLIBCXX_\K[0-9.]+' | sort -V | tail -1)"
 
-          # A plain virtual environment holding the RDKit wheel and this one, and nothing
-          # else: no compiler, no RDKit headers, no Boost. This is the property that lets
-          # consumers install without a toolchain, so the job fails if it does not hold.
-          python -m venv /tmp/probe
-          /tmp/probe/bin/pip install --quiet "rdkit==$(echo "$RDKIT_VERSION" | sed 's/\.0/./')" numpy pandas "$wheel"
-          # From /tmp, so that the source checkout's own cuik_molmaker directory -- which the
-          # build writes artifacts into -- cannot shadow the installed package.
+          # A prefix holding python, the RDKit wheel and this one, and nothing else: no
+          # compiler, no RDKit headers, no Boost. That is the property letting consumers
+          # install without a toolchain, so the job fails if it does not hold. A prefix
+          # rather than a venv because the module links libpython, which a prefix provides
+          # through the same $ORIGIN entry that finds the rest.
+          micromamba create -y -n probe -c conda-forge python=${PYTHON_VERSION} pip
+          micromamba run -n probe pip install --quiet \
+            "rdkit==$(echo "$RDKIT_VERSION" | sed 's/\.0/./')" numpy pandas "$PWD/$wheel"
+          # From /tmp, so the checkout's own cuik_molmaker directory -- which the build writes
+          # artifacts into -- cannot shadow the installed package.
           cd /tmp
-          /tmp/probe/bin/python - <<'PY'
+          micromamba run -n probe python - <<'PY'
           from rdkit import Chem
           import cuik_molmaker
 
