@@ -48,7 +48,9 @@ jobs:
         shell: bash -el {0}
         run: |
           # PyPI numbering drops the leading zero: 2026.03.4 -> 2026.3.4
-          pip install "rdkit==$(echo "$RDKIT_VERSION" | sed 's/\.0/./')" numpy
+          # setuptools and wheel are explicit: the build runs without isolation so that it
+          # links the RDKit installed here, and Python 3.13 no longer bundles setuptools.
+          pip install setuptools wheel "rdkit==$(echo "$RDKIT_VERSION" | sed 's/\.0/./')" numpy
 
       - name: Build
         shell: bash -el {0}
