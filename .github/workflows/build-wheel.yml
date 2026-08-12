@@ -1,9 +1,9 @@
-# Builds the wheel consumers install, so that they need no build toolchain of their own.
+# Builds the wheels consumers install, so that they need no build toolchain of their own.
 #
-# The wheel links the PyPI RDKit rather than conda's, which is what keeps its C++ runtime
-# requirement at the manylinux level and leaves a single RDKit in the importing process.
-# Headers still come from conda -- the PyPI wheel ships none, and rdkit-headers on PyPI lags
-# the library releases -- but that is confined to this job rather than to every install.
+# The build runs inside a manylinux container and the wheels carry a manylinux platform tag,
+# so pip refuses one on a host older than the glibc it was built for rather than letting the
+# dynamic loader fail at import. ci/build-wheel.sh holds the actual steps and runs by hand in
+# the same container, so a maintainer can verify exactly what this job publishes.
 name: build wheel
 
 on:
@@ -12,108 +12,49 @@ on:
       rdkit_version:
         description: RDKit version to build and link against
         default: "2026.03.4"
-      python_version:
-        description: Python version to build for
-        default: "3.13"
   push:
     tags:
       - "v*"
 
 env:
   RDKIT_VERSION: ${{ inputs.rdkit_version || '2026.03.4' }}
-  PYTHON_VERSION: ${{ inputs.python_version || '3.13' }}
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    container: quay.io/pypa/manylinux_2_28_x86_64
+    strategy:
+      fail-fast: false
+      matrix:
+        py_tag: [cp311, cp312, cp313]
     steps:
       - uses: actions/checkout@v4
 
-      - name: Provision headers and toolchain
-        uses: mamba-org/setup-micromamba@v2
-        with:
-          environment-name: build
-          create-args: >-
-            python=${{ env.PYTHON_VERSION }}
-            librdkit-dev=${{ env.RDKIT_VERSION }}
-            libboost-devel
-            eigen
-            cmake
-            cxx-compiler
-            patchelf
-            pybind11
-          init-shell: bash
-
-      - name: Install the RDKit the wheel will link
-        shell: bash -el {0}
-        run: |
-          # PyPI numbering drops the leading zero: 2026.03.4 -> 2026.3.4
-          # setuptools and wheel are explicit: the build runs without isolation so that it
-          # links the RDKit installed here, and Python 3.13 no longer bundles setuptools.
-          pip install setuptools wheel "rdkit==$(echo "$RDKIT_VERSION" | sed 's/\.0/./')" numpy
-
-      - name: Build
-        shell: bash -el {0}
-        run: pip wheel --no-build-isolation --no-deps -w dist .
-
-      - name: Verify the wheel is self-contained
-        shell: bash -el {0}
-        run: |
-          set -euo pipefail
-          wheel=$(ls dist/*.whl)
-
-          core=$(python -c "import zipfile,sys; print([n for n in zipfile.ZipFile('$wheel').namelist() if n.endswith('libcuik_molmaker_core.so')][0])")
-          python -c "import zipfile; zipfile.ZipFile('$wheel').extractall('/tmp/unpacked')"
-          echo "RUNPATH: $(patchelf --print-rpath /tmp/unpacked/$core)"
-          if patchelf --print-rpath /tmp/unpacked/$core | tr ':' '\n' | grep -v '^\$ORIGIN' | grep -q .; then
-            echo "non-relocatable RUNPATH entry"; exit 1
-          fi
-          if readelf -d /tmp/unpacked/$core | grep -q '(RPATH)'; then
-            echo "DT_RPATH must not be used"; exit 1
-          fi
-          echo "highest GLIBCXX required: $(objdump -T /tmp/unpacked/$core | grep -oP 'GLIBCXX_\K[0-9.]+' | sort -V | tail -1)"
-
-          # A plain virtual environment holding the RDKit wheel and this one, and nothing
-          # else: no compiler, no RDKit headers, no Boost, and no conda prefix. That is the
-          # property letting consumers install without a toolchain, so the job fails if it
-          # does not hold.
-          python -m venv /tmp/probe
-          /tmp/probe/bin/pip install --quiet \
-            "rdkit==$(echo "$RDKIT_VERSION" | sed 's/\.0/./')" numpy pandas "$PWD/$wheel"
-          # From /tmp, so the checkout's own cuik_molmaker directory -- which the build writes
-          # artifacts into -- cannot shadow the installed package.
-          cd /tmp
-          /tmp/probe/bin/python - <<'PY'
-          from rdkit import Chem
-          import cuik_molmaker
-
-          onehot = cuik_molmaker.atom_onehot_feature_names_to_array(["chirality"])
-          floats = cuik_molmaker.atom_float_feature_names_to_array(["atomic-number"])
-          bonds = cuik_molmaker.bond_feature_names_to_array(["bond-type-onehot"])
-          atoms, edges, *_ = cuik_molmaker.batch_mol_featurizer_from_binary(
-              [Chem.MolFromSmiles("c1ccccc1O").ToBinary()], onehot, floats, bonds, False, True, False
-          )
-          assert atoms.shape[0] == 7 and edges.shape[0] == 14, (atoms.shape, edges.shape)
-          print("wheel featurizes correctly in a prefix with no toolchain")
-          PY
-
-      - name: Test the wheel as installed
-        shell: bash -el {0}
-        run: |
-          set -euo pipefail
-          /tmp/probe/bin/pip install --quiet pytest
-          # From /tmp against an absolute path, so the suite exercises the installed wheel
-          # rather than the build tree the checkout still holds.
-          cd /tmp
-          /tmp/probe/bin/python -m pytest "$GITHUB_WORKSPACE/tests/python" -q
+      - name: Build, audit and test
+        run: SRC="$GITHUB_WORKSPACE" OUT="$GITHUB_WORKSPACE/dist" bash ci/build-wheel.sh ${{ matrix.py_tag }}
 
       - uses: actions/upload-artifact@v4
         with:
-          name: cuik-molmaker-py${{ env.PYTHON_VERSION }}-rdkit${{ env.RDKIT_VERSION }}
-          path: dist/*.whl
+          name: wheel-${{ matrix.py_tag }}
+          path: dist/*manylinux*.whl
 
-      - name: Publish on tag
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
         with:
-          files: dist/*.whl
+          pattern: wheel-*
+          merge-multiple: true
+          path: dist
+
+      # Consumers pin by URL and digest, so publish the digests next to the wheels.
+      - name: Record digests
+        run: cd dist && sha256sum *.whl | tee SHA256SUMS
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.whl
+            dist/SHA256SUMS

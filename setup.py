@@ -102,6 +102,23 @@ def _build_prefix():
     return os.environ.get("CONDA_PREFIX") or sys.prefix
 
 
+def _cmake_prefix_paths():
+    """Return the search prefixes CMake needs to resolve this build's dependencies.
+
+    pybind11 installs its CMake package inside site-packages rather than under the prefix's
+    own ``share/cmake``, so a prefix alone does not find it. Asking the module where it put
+    itself works whether it arrived from conda, pip or the build backend.
+    """
+    prefixes = [_build_prefix()]
+    try:
+        import pybind11
+
+        prefixes.append(pybind11.get_cmake_dir())
+    except ImportError:
+        pass
+    return prefixes
+
+
 def _detect_pip_rdkit_libdir():
     """Return the PyPI rdkit wheel's bundled library directory, or None if RDKit is conda's.
 
@@ -270,7 +287,8 @@ class CMakeBuild(build_ext):
             # Prepare cmake command
             cmake_args = [
                 "cmake",
-                f"-DCMAKE_PREFIX_PATH={os.environ['CONDA_PREFIX']}",
+                f"-DCMAKE_PREFIX_PATH={';'.join(_cmake_prefix_paths())}",
+                f"-DPython_EXECUTABLE={sys.executable}",
             ]
             cmake_args.extend(cmake_extra_args)
             cmake_args.append(os.path.abspath(os.path.dirname(__file__)))

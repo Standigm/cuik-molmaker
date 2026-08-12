@@ -74,11 +74,15 @@ endif()
 set(PYTHON_ROOT_DIR $ENV{CONDA_PREFIX})
 message(STATUS "PYTHON_ROOT_DIR: ${PYTHON_ROOT_DIR}")
 
-# Set Python paths and hints before FindPython is called
-if(WIN32)
-    set(Python_EXECUTABLE "$ENV{CONDA_PREFIX}/python.exe")
-else()
-    set(Python_EXECUTABLE "$ENV{CONDA_PREFIX}/bin/python")
+# Set Python paths and hints before FindPython is called. setup.py passes the interpreter
+# running the build, which is authoritative; the conda prefix is only a fallback for a
+# direct cmake invocation.
+if(NOT Python_EXECUTABLE)
+    if(WIN32)
+        set(Python_EXECUTABLE "$ENV{CONDA_PREFIX}/python.exe")
+    else()
+        set(Python_EXECUTABLE "$ENV{CONDA_PREFIX}/bin/python")
+    endif()
 endif()
 message(STATUS "Using Python executable: ${Python_EXECUTABLE}")
 
@@ -89,8 +93,11 @@ set(Python_ROOT "$ENV{CONDA_PREFIX}")
 set(CMAKE_FIND_FRAMEWORK NEVER) # Avoid issues with macOS frameworks
 set(CMAKE_PREFIX_PATH "${CONDA_PREFIX};${CMAKE_PREFIX_PATH}")
 
-# Find required packages - will use the Python_EXECUTABLE we specified
-find_package(Python COMPONENTS Interpreter Development REQUIRED)
+# Find required packages - will use the Python_EXECUTABLE we specified.
+# Development.Module rather than Development: building an extension needs the headers, not
+# libpython, which the Linux link deliberately leaves out and which a manylinux CPython
+# does not ship at all.
+find_package(Python COMPONENTS Interpreter Development.Module REQUIRED)
 message(STATUS "Python_EXECUTABLE: ${Python_EXECUTABLE}")
 message(STATUS "Python_INCLUDE_DIRS: ${Python_INCLUDE_DIRS}")
 message(STATUS "Python_LIBRARIES: ${Python_LIBRARIES}")
@@ -154,20 +161,25 @@ else()
   # Normalize path to use forward slashes (CMake prefers this)
   file(TO_CMAKE_PATH "${CUIKMOLMAKER_BUILD_AGAINST_PIP_LIBDIR}" LIBDIR_NORMALIZED)
   
+  # Only the RDKit libraries cuik calls into. The wheel's library directory also holds the
+  # rest of RDKit and its own dependencies, and linking all of them records every one as
+  # NEEDED -- including libraries such as ChemDraw that drag in fontconfig, which the
+  # target environment need not have. The names carry a per-build hash, so each surplus
+  # entry also ties the artifact more tightly to one exact RDKit wheel.
+  set(RDKIT_COMPONENTS RDKitGraphMol RDKitRDGeneral RDKitSmilesParse RDKitSubstructMatch)
   if(WIN32)
-    # On Windows, look for .dll files
     file(GLOB ALL_RDKIT_FILES "${LIBDIR_NORMALIZED}/RDKit*.dll")
-    # Select only certain RDKit*.dll files
-    set(RDKIT_FILES "")
-    foreach(file ${ALL_RDKIT_FILES})
-        if(file MATCHES "RDKitGraphMol" OR file MATCHES "RDKitRDGeneral" OR file MATCHES "RDKitSmilesParse" OR file MATCHES "RDKitSubstructMatch")
-            list(APPEND RDKIT_FILES "${file}")
-        endif()
-    endforeach()
   else()
-    # On Unix, look for all library files
-    file(GLOB RDKIT_FILES "${LIBDIR_NORMALIZED}/*")
+    file(GLOB ALL_RDKIT_FILES "${LIBDIR_NORMALIZED}/*")
   endif()
+  set(RDKIT_FILES "")
+  foreach(file ${ALL_RDKIT_FILES})
+    foreach(component ${RDKIT_COMPONENTS})
+      if(file MATCHES "${component}")
+        list(APPEND RDKIT_FILES "${file}")
+      endif()
+    endforeach()
+  endforeach()
   
   # for each file, make an imported library with that lib as source
   message(
