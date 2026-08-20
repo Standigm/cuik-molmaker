@@ -157,3 +157,43 @@ print(rdkit2D_descriptors.min(), rdkit2D_descriptors.max()) # (0.0, 1.0)
 ```
 
 
+
+#### Compute selected descriptors in C++
+`MoleculeFeaturizer` evaluates every RDKit 2D descriptor in Python. When only a few are
+needed, `batch_molecular_descriptors` computes them in C++ across threads instead.
+
+```python
+import cuik_molmaker
+
+# Descriptors available from the C++ implementation
+print(cuik_molmaker.list_all_molecular_descriptors())
+
+smiles_list = ["CC(=O)OC1=CC=CC=C1C(=O)O", # aspirin
+               "CN(C)CCOC(C1=CC=CC=C1)C1=CC=CC=C1", # diphenhydramine
+]
+descriptors = ["qed", "MolLogP", "SAScore"]
+
+# num_threads=0 selects the hardware concurrency
+values = cuik_molmaker.batch_molecular_descriptors(smiles_list, descriptors, 0)
+
+# One row per molecule, one column per requested descriptor, in the order requested.
+# A SMILES that does not parse gives a row of NaN rather than raising.
+print(values.shape) # (2, 3)
+```
+
+If you already hold RDKit molecules, pass them as binary pickles instead of SMILES.
+`Chem.MolFromSmiles` sanitizes, which removes explicit hydrogens, so a SMILES round-trip
+silently changes `BalabanJ`, `BertzCT` and `SAScore` for molecules that carry them:
+
+```python
+from rdkit import Chem
+
+mols = [Chem.AddHs(Chem.MolFromSmiles(smi)) for smi in smiles_list]
+values = cuik_molmaker.batch_molecular_descriptors_from_binary(
+    [mol.ToBinary() for mol in mols], descriptors, 0
+)
+```
+
+`SAScore` follows the normalization fix in [RDKit PR #9501](https://github.com/rdkit/rdkit/pull/9501).
+Values above 8 therefore differ from `Contrib/SA_Score/sascorer.py`, whose smoothing
+branch diverges there and reports very hard molecules as very easy ones.

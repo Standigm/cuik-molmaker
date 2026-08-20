@@ -441,6 +441,7 @@ data_files = [
     "best_normalization_params.json",
     "fast_normalization_params.json",
     "descriptastorus_normalization_params.json",
+    "sa_score_fragments.bin",
     "README.md",
 ]
 for data_file in data_files:
@@ -485,6 +486,7 @@ setup(
             "*.pyd",
             "*.dll",
             "*.py",
+            "data/*.bin",
             "data/*.json",
             "data/*.md",
         ],  # Include Python extension and Python files

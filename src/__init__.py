@@ -63,6 +63,12 @@ for file in os.listdir(_module_dir):
         break
 
 
+# The SA score reads its fragment table on first use; this only records where it lives.
+if "set_sa_score_fragment_path" in globals():
+    _sa_table = _module_dir / "data" / "sa_score_fragments.bin"
+    set_sa_score_fragment_path(str(_sa_table))  # noqa: F821
+
+
 __all__ = [
     # mol_features functions
     "MoleculeFeaturizer",
