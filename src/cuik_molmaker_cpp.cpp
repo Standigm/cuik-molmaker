@@ -128,7 +128,8 @@ PYBIND11_MODULE(cuik_molmaker_cpp, m) {
     py::arg("smiles"),
     "Synthetic accessibility score for one SMILES string, in [1, 10]. Adopts the "
     "normalization fix from RDKit PR #9501, so values above 8 differ from the Contrib "
-    "script, which is discontinuous there.");
+    "script, which is discontinuous there. Raises for a molecule with no atoms, for "
+    "which the score is undefined.");
   m.def("list_all_molecular_descriptors",
         &list_all_molecular_descriptors,
         "Returns the descriptor names accepted by batch_molecular_descriptors.");
@@ -139,7 +140,8 @@ PYBIND11_MODULE(cuik_molmaker_cpp, m) {
         py::arg("num_threads") = 0,
         "Accepts a list of SMILES strings and descriptor names and returns a "
         "(num_molecules, num_descriptors) NumPy array. The batch is split across threads with "
-        "the GIL released; SMILES that do not parse give a row of NaN.");
+        "the GIL released, using at most the hardware concurrency; SMILES that do not parse give "
+        "a row of NaN, and a descriptor that rejects a molecule gives NaN for that cell.");
 
   m.def(
     "batch_molecular_descriptors_from_binary",

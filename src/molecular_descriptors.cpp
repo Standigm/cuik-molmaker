@@ -77,6 +77,9 @@ double bertz_bond_order(const RDKit::Bond& bond) {
 //! This is what "%.4f" yields, without the decimal conversion. Doing it in floating
 //! point instead -- `llround(value * 1e4)` -- disagrees at exact ties, which round the
 //! other way: 0.40625 renders as "0.4062" but llrounds to 4063.
+//!
+//! Exact for `|value| < 2^49`, which every distance in a molecular graph satisfies;
+//! larger magnitudes saturate rather than wrap, keeping the comparison total.
 std::int64_t scaled_to_four_decimals(double value) {
   if (!std::isfinite(value) || value == 0.0) {
     return 0;
@@ -87,24 +90,28 @@ std::int64_t scaled_to_four_decimals(double value) {
   int                 exponent = 0;
   const double        fraction = std::frexp(magnitude, &exponent);  // magnitude = fraction * 2^exponent
   const std::uint64_t mantissa = static_cast<std::uint64_t>(std::ldexp(fraction, 53));
-  const int           shift    = 53 - exponent;  // magnitude = mantissa * 2^-shift
 
-  const unsigned __int128 scaled = static_cast<unsigned __int128>(mantissa) * 10000u;
-  unsigned __int128       rounded;
-  if (shift <= 0) {
-    rounded = scaled << (-shift);
-  } else if (shift >= 68) {
-    // scaled < 2^67 <= 2^(shift-1), so the value is below a half and rounds to zero.
+  // 10^4 is 2^4 * 625. Scaling by the odd factor alone keeps the product inside 64 bits
+  // (mantissa < 2^53, so mantissa * 625 < 2^63) and the 2^4 folds into the shift, which
+  // avoids the 128-bit integers MSVC does not provide.
+  const std::uint64_t scaled = mantissa * 625u;
+  const int           shift  = 49 - exponent;  // magnitude * 10^4 == scaled * 2^-shift
+
+  std::uint64_t rounded = 0;
+  if (shift >= 64) {
+    // scaled < 2^63 <= 2^(shift-1), so the value lies below a half and rounds to zero.
     rounded = 0;
+  } else if (shift > 0) {
+    const std::uint64_t quotient  = scaled >> shift;
+    const std::uint64_t remainder = scaled - (quotient << shift);
+    const std::uint64_t half      = std::uint64_t{1} << (shift - 1);
+    rounded = quotient + ((remainder > half || (remainder == half && (quotient & 1) != 0)) ? 1 : 0);
   } else {
-    const unsigned __int128 quotient  = scaled >> shift;
-    const unsigned __int128 remainder = scaled - (quotient << shift);
-    const unsigned __int128 half      = static_cast<unsigned __int128>(1) << (shift - 1);
-    rounded                           = quotient;
-    if (remainder > half || (remainder == half && (quotient & 1) != 0)) {
-      ++rounded;
-    }
+    const int           left    = -shift;
+    const std::uint64_t ceiling = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+    rounded                     = (left < 64 && scaled <= (ceiling >> left)) ? (scaled << left) : ceiling;
   }
+
   const std::int64_t result = static_cast<std::int64_t>(rounded);
   return negative ? -result : result;
 }
@@ -403,10 +410,41 @@ const SaFragmentTable& sa_fragment_table() {
       throw std::runtime_error("SA score fragment table header truncated: " + path);
     }
 
+    // Check the counts against the file before allocating: they come from the file, so an
+    // absurd count would otherwise be a multi-exabyte resize.
+    const std::streamoff header_bytes = sizeof(magic) + sizeof(header);
+    stream.seekg(0, std::ios::end);
+    const std::streamoff file_size = stream.tellg();
+    stream.seekg(header_bytes, std::ios::beg);
+    if (!stream || file_size < header_bytes) {
+      throw std::runtime_error("SA score fragment table is too short: " + path);
+    }
+
+    const std::uint64_t entry_bytes = sizeof(std::uint32_t) + sizeof(std::uint16_t);
+    const std::uint64_t payload     = static_cast<std::uint64_t>(file_size - header_bytes);
+    const std::uint64_t num_entries = header[0];
+    const std::uint64_t num_scores  = header[1];
+    if (num_entries > payload / entry_bytes || num_scores > payload / sizeof(double) ||
+        num_entries * entry_bytes + num_scores * sizeof(double) != payload) {
+      throw std::runtime_error("SA score fragment table has inconsistent counts: " + path);
+    }
+
     SaFragmentTable loaded;
-    read_array(stream, loaded.keys, header[0], "keys");
-    read_array(stream, loaded.score_index, header[0], "score indices");
-    read_array(stream, loaded.scores, header[1], "score table");
+    read_array(stream, loaded.keys, num_entries, "keys");
+    read_array(stream, loaded.score_index, num_entries, "score indices");
+    read_array(stream, loaded.scores, num_scores, "score table");
+
+    // lookup() binary-searches the keys and indexes the score table, so an unsorted key
+    // array or an out-of-range index would return a wrong score rather than fail.
+    if (!std::is_sorted(loaded.keys.begin(), loaded.keys.end())) {
+      throw std::runtime_error("SA score fragment table keys are not sorted: " + path);
+    }
+    const std::size_t score_count = loaded.scores.size();
+    if (std::any_of(loaded.score_index.begin(), loaded.score_index.end(), [score_count](std::uint16_t index) {
+          return index >= score_count;
+        })) {
+      throw std::runtime_error("SA score fragment table has an out-of-range score index: " + path);
+    }
     return loaded;
   }();
   return table;
@@ -443,7 +481,7 @@ void set_sa_score_fragment_path(const std::string& path) {
 double sa_score(const RDKit::ROMol& mol) {
   const unsigned int num_atoms = mol.getNumAtoms();
   if (num_atoms == 0) {
-    return std::numeric_limits<double>::quiet_NaN();
+    throw std::invalid_argument("SA score is not defined for a molecule with no atoms");
   }
   const SaFragmentTable& table = sa_fragment_table();
 
@@ -630,9 +668,11 @@ py::array_t<double> compute_descriptor_table(const std::vector<std::string>& inp
   {
     py::gil_scoped_release release;
 
-    unsigned int workers =
-      num_threads > 0 ? static_cast<unsigned int>(num_threads) : std::thread::hardware_concurrency();
-    workers = std::max(1u, std::min<unsigned int>(workers, static_cast<unsigned int>(num_mols)));
+    // More workers than cores buys nothing for this work, and an unbounded request
+    // would try to create that many OS threads.
+    const unsigned int available = std::max(1u, std::thread::hardware_concurrency());
+    unsigned int workers = num_threads > 0 ? std::min(static_cast<unsigned int>(num_threads), available) : available;
+    workers              = std::max(1u, std::min<unsigned int>(workers, static_cast<unsigned int>(num_mols)));
 
     const auto compute_range = [&](size_t begin, size_t end) {
       for (size_t row = begin; row < end; ++row) {
@@ -655,7 +695,9 @@ py::array_t<double> compute_descriptor_table(const std::vector<std::string>& inp
     if (workers <= 1 || num_mols == 0) {
       compute_range(0, num_mols);
     } else {
-      std::vector<std::thread> pool;
+      // jthread joins on destruction, so failing to create the Nth worker still joins the
+      // first N-1 while unwinding instead of terminating on a joinable thread.
+      std::vector<std::jthread> pool;
       pool.reserve(workers);
       const size_t chunk = (num_mols + workers - 1) / workers;
       for (unsigned int w = 0; w < workers; ++w) {
@@ -664,9 +706,6 @@ py::array_t<double> compute_descriptor_table(const std::vector<std::string>& inp
         if (begin < end) {
           pool.emplace_back(compute_range, begin, end);
         }
-      }
-      for (std::thread& worker : pool) {
-        worker.join();
       }
     }
   }

@@ -68,7 +68,9 @@ CUIK_EXPORT void set_sa_score_fragment_path(const std::string& path);
 //!
 //! @param mol Molecule to score
 //! @return Score clamped to [1, 10]
-//! @throws std::runtime_error if the fragment table is missing or unreadable
+//! @throws std::invalid_argument if the molecule has no atoms, for which the score is
+//!         undefined; the batch entry points report that as NaN for the cell
+//! @throws std::runtime_error if the fragment table is missing, unreadable or malformed
 CUIK_EXPORT double sa_score(const RDKit::ROMol& mol);
 
 //! Names accepted by `batch_molecular_descriptors`, in a stable order.
@@ -78,11 +80,13 @@ CUIK_EXPORT std::vector<std::string> list_all_molecular_descriptors();
 //!
 //! Molecules are independent, so the batch is split across threads with the GIL released.
 //! A SMILES that does not parse yields a row of NaN rather than raising, matching the
-//! Python `MoleculeFeaturizer`.
+//! Python `MoleculeFeaturizer`; a descriptor that rejects a molecule yields NaN for that
+//! cell alone.
 //!
 //! @param smiles_list SMILES to featurize, one per output row
 //! @param descriptor_names Descriptors to compute, one per output column
-//! @param num_threads Worker threads; 0 selects the hardware concurrency
+//! @param num_threads Worker threads, capped at the hardware concurrency because the work
+//!                    is CPU-bound; 0 selects it directly
 //! @return Array of shape `(smiles_list.size(), descriptor_names.size())`, dtype float64
 //! @throws std::invalid_argument if any descriptor name is unknown
 CUIK_EXPORT py::array_t<double> batch_molecular_descriptors(const std::vector<std::string>& smiles_list,
@@ -98,7 +102,8 @@ CUIK_EXPORT py::array_t<double> batch_molecular_descriptors(const std::vector<st
 //!
 //! @param mol_binaries Molecules serialised with RDKit's `Mol.ToBinary()`
 //! @param descriptor_names Descriptors to compute, one per output column
-//! @param num_threads Worker threads; 0 selects the hardware concurrency
+//! @param num_threads Worker threads, capped at the hardware concurrency because the work
+//!                    is CPU-bound; 0 selects it directly
 //! @return Array of shape `(mol_binaries.size(), descriptor_names.size())`, dtype float64
 //! @throws std::invalid_argument if any descriptor name is unknown
 CUIK_EXPORT py::array_t<double> batch_molecular_descriptors_from_binary(

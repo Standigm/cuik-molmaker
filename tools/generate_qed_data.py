@@ -45,9 +45,7 @@ def main() -> None:
         f"{_cxx_string('[$([A;R][!a])]')};\n\n"
     )
 
-    out(
-        "//! Acceptor patterns; QED's HBA term counts all of their matches.\n"
-    )
+    out("//! Acceptor patterns; QED's HBA term counts all of their matches.\n")
     out(
         f"inline constexpr std::array<const char*, {len(QED.AcceptorSmarts)}>"
         " ACCEPTOR_SMARTS = {\n"
@@ -56,9 +54,7 @@ def main() -> None:
         out(f"  {_cxx_string(smarts)},\n")
     out("};\n\n")
 
-    out(
-        "//! Alert patterns; QED's ALERTS term counts how many match at all.\n"
-    )
+    out("//! Alert patterns; QED's ALERTS term counts how many match at all.\n")
     out(
         f"inline constexpr std::array<const char*, {len(QED.StructuralAlertSmarts)}>"
         " STRUCTURAL_ALERT_SMARTS = {\n"
@@ -67,9 +63,7 @@ def main() -> None:
         out(f"  {_cxx_string(smarts)},\n")
     out("};\n\n")
 
-    out(
-        "//! Asymmetric double sigmoidal parameters (a..f, dmax) per QED property.\n"
-    )
+    out("//! Asymmetric double sigmoidal parameters (a..f, dmax) per QED property.\n")
     out(
         f"inline constexpr std::array<std::array<double, 7>, {len(PROPERTY_ORDER)}>"
         " ADS_PARAMETERS = {{\n"

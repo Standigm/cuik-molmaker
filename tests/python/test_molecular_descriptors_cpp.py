@@ -272,3 +272,39 @@ def test_unreadable_binary_yields_nan_row(valid_smiles):
 
     assert np.isnan(out[1]).all() and np.isnan(out[2]).all()
     assert np.isfinite(out[0]).all() and np.isfinite(out[3]).all()
+
+
+# ---------------------------------------------------------------------------
+# Contracts the C++ side promises: zero-atom rejection, thread-count clamping,
+# and refusal to load a malformed fragment table.
+# ---------------------------------------------------------------------------
+
+
+def test_sa_score_rejects_a_molecule_with_no_atoms():
+    """An empty SMILES parses to a zero-atom molecule, where the score is undefined."""
+    assert Chem.MolFromSmiles("").GetNumAtoms() == 0
+
+    with pytest.raises(ValueError, match="no atoms"):
+        cuik_molmaker.sa_score("")
+
+
+def test_batch_reports_a_rejected_molecule_as_nan():
+    """A descriptor that rejects one molecule must not fail the whole batch."""
+    names = cuik_molmaker.list_all_molecular_descriptors()
+
+    out = cuik_molmaker.batch_molecular_descriptors(["CCO", "", "c1ccccc1"], names, 2)
+
+    sa_column = names.index("SAScore")
+    assert np.isnan(out[1, sa_column])
+    assert np.isfinite(out[0]).all() and np.isfinite(out[2]).all()
+
+
+@pytest.mark.parametrize("num_threads", (1, 4, 1_000_000))
+def test_absurd_thread_count_is_clamped(valid_smiles, num_threads):
+    """Worker count is capped, so a large request cannot exhaust thread handles."""
+    names = cuik_molmaker.list_all_molecular_descriptors()
+
+    np.testing.assert_array_equal(
+        cuik_molmaker.batch_molecular_descriptors(valid_smiles, names, num_threads),
+        cuik_molmaker.batch_molecular_descriptors(valid_smiles, names, 1),
+    )
