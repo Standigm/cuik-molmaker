@@ -9,6 +9,7 @@ RDKit's Python produces, since a port is only worth having if it changes nothing
 """
 
 import os
+import subprocess
 import sys
 
 import numpy as np
@@ -307,4 +308,110 @@ def test_absurd_thread_count_is_clamped(valid_smiles, num_threads):
     np.testing.assert_array_equal(
         cuik_molmaker.batch_molecular_descriptors(valid_smiles, names, num_threads),
         cuik_molmaker.batch_molecular_descriptors(valid_smiles, names, 1),
+    )
+
+
+# Exit code the probe below uses to say the environment could not exercise the failure.
+_PROBE_INCONCLUSIVE = 42
+
+# Aborting needs a worker to fail *after* an earlier one started: with no slots at all,
+# the first construction throws into an empty pool, which unwinds cleanly either way.
+# So the probe bisects RLIMIT_NPROC for a limit it can saturate, then frees a known
+# handful of slots and asks for more workers than that.
+_THREAD_FAILURE_PROBE = """
+import resource, sys, threading
+
+INCONCLUSIVE, HEADROOM, REQUEST, CAP = 42, 2, 32, 256
+
+import cuik_molmaker as cm
+names = cm.list_all_molecular_descriptors()
+# chunks large enough that the first workers are still running when a later one fails
+smiles = ["CC(=O)Oc1ccccc1C(=O)O"] * 12800
+cm.batch_molecular_descriptors(smiles[:1], names, 1)   # warm tables before limits
+
+soft, hard = resource.getrlimit(resource.RLIMIT_NPROC)
+
+
+def hold(limit):
+    resource.setrlimit(resource.RLIMIT_NPROC, (limit, hard))
+    events, threads = [], []
+    try:
+        while len(threads) < CAP:
+            event = threading.Event()
+            thread = threading.Thread(target=event.wait, daemon=True)
+            thread.start()
+            events.append(event)
+            threads.append(thread)
+    except RuntimeError:
+        pass
+    return events, threads
+
+
+def release(events, threads, count=None):
+    for event in events[:count]:
+        event.set()
+    for thread in threads[:count]:
+        thread.join()
+
+
+def count_at(limit):
+    events, threads = hold(limit)
+    held = len(threads)
+    release(events, threads)
+    return held
+
+
+lo, hi = 1, 128
+while count_at(hi) < CAP:
+    lo, hi = hi, hi * 2
+    if hi > (1 << 22):
+        sys.exit(INCONCLUSIVE)
+
+target = None
+while hi - lo > 1:
+    mid = (lo + hi) // 2
+    held = count_at(mid)
+    if held >= CAP:
+        hi = mid
+    elif held <= HEADROOM:
+        lo = mid
+    else:
+        target = mid
+        break
+
+if target is None:
+    sys.exit(INCONCLUSIVE)
+
+events, threads = hold(target)
+if not HEADROOM < len(threads) < CAP:
+    sys.exit(INCONCLUSIVE)
+release(events, threads, count=HEADROOM)
+
+try:
+    cm.batch_molecular_descriptors(smiles, names, REQUEST)
+except Exception:
+    sys.exit(0)          # refused to start a worker and said so, rather than dying
+sys.exit(INCONCLUSIVE)   # the limit never bit, so this run proves nothing
+"""
+
+
+@pytest.mark.skipif(os.name != "posix", reason="RLIMIT_NPROC is POSIX-only")
+def test_failed_worker_start_raises_instead_of_aborting():
+    """Exhausting thread handles must surface an exception, not kill the interpreter.
+
+    Unwinding past a joinable ``std::thread`` calls ``std::terminate``, so a pool of
+    those aborts here with "terminate called without an active exception", while
+    ``std::jthread`` joins while unwinding and lets the error propagate. A thread-count
+    assertion cannot tell the two apart: both cap the worker count, and both succeed
+    whenever threads are available.
+    """
+    result = subprocess.run(
+        [sys.executable, "-c", _THREAD_FAILURE_PROBE], capture_output=True, text=True
+    )
+
+    if result.returncode == _PROBE_INCONCLUSIVE:
+        pytest.skip("could not exhaust thread handles in this environment")
+    assert result.returncode == 0, (
+        f"worker start failure was not raised cleanly (exit {result.returncode}): "
+        f"{result.stderr.strip()[-300:]}"
     )

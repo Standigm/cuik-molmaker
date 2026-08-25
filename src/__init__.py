@@ -64,9 +64,10 @@ for file in os.listdir(_module_dir):
 
 
 # The SA score reads its fragment table on first use; this only records where it lives.
-if "set_sa_score_fragment_path" in globals():
-    _sa_table = _module_dir / "data" / "sa_score_fragments.bin"
-    set_sa_score_fragment_path(str(_sa_table))  # noqa: F821
+# The entry point is underscored so it stays off the package's public surface, which is
+# also why it is reached through the extension module rather than through globals().
+if "_module" in globals() and hasattr(_module, "_set_sa_score_fragment_path"):
+    _module._set_sa_score_fragment_path(str(_module_dir / "data" / "sa_score_fragments.bin"))
 
 
 __all__ = [

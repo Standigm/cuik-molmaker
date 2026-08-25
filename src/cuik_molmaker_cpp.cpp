@@ -111,11 +111,11 @@ PYBIND11_MODULE(cuik_molmaker_cpp, m) {
     py::arg("smiles"),
     "Balaban's J connectivity index for one SMILES string. RDKit implements this only in "
     "Python; this is a port of GraphDescriptors.BalabanJ.");
-  m.def("set_sa_score_fragment_path",
+  m.def("_set_sa_score_fragment_path",
         &set_sa_score_fragment_path,
         py::arg("path"),
-        "Points the SA score at its binary fragment table. Called on import; the table "
-        "itself is read on first use.");
+        "Internal. Points the SA score at the fragment table shipped with the package; "
+        "cuik_molmaker calls this on import and the table is read on first use.");
   m.def(
     "sa_score",
     [](const std::string& smiles) {

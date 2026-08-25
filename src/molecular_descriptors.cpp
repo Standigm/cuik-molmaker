@@ -390,7 +390,7 @@ const SaFragmentTable& sa_fragment_table() {
   static const SaFragmentTable table = [] {
     const std::string& path = sa_fragment_path();
     if (path.empty()) {
-      throw std::runtime_error("SA score fragment table path is unset; call set_sa_score_fragment_path first");
+      throw std::runtime_error("SA score fragment table path is unset; the package sets it on import");
     }
 
     std::ifstream stream(path, std::ios::binary);
