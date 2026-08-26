@@ -322,11 +322,22 @@ _PROBE_INCONCLUSIVE = 42
 # steered reports inconclusive, and so does a run that fails to evidence a worker having
 # started, so the probe cannot report success on a first-worker refusal.
 _THREAD_FAILURE_PROBE = """
-import resource, sys
+import os, resource, sys
 
 INCONCLUSIVE, HEADROOM, REQUEST, CAP = 42, 2, 32, 256
 MIN_WORKER_CPU = 0.25          # seconds; one worker's chunk is several times this
 SEARCH_START, SEARCH_MAX = 128, 1 << 22
+
+# A caller may ask for a particular ceiling. Applying it here, in the already-execed
+# child, avoids preexec_fn, which Python documents as unsafe when the parent has
+# threads: it runs between fork and exec, where the child can deadlock.
+requested = os.environ.get("CUIK_MOLMAKER_TEST_NPROC_LIMIT")
+if requested is not None:
+    try:
+        ceiling = int(requested)
+        resource.setrlimit(resource.RLIMIT_NPROC, (ceiling, ceiling))
+    except (ValueError, OSError):
+        sys.exit(INCONCLUSIVE)
 
 soft, hard = resource.getrlimit(resource.RLIMIT_NPROC)
 bounded = hard != resource.RLIM_INFINITY
@@ -449,6 +460,23 @@ sys.exit(INCONCLUSIVE)              # the ceiling never bit, so this run proves 
 """
 
 
+def _run_thread_failure_probe(nproc_limit=None):
+    """Run the probe, or return None if the inherited quota forbids another process."""
+    env = dict(os.environ)
+    if nproc_limit is not None:
+        env["CUIK_MOLMAKER_TEST_NPROC_LIMIT"] = str(nproc_limit)
+
+    try:
+        return subprocess.run(
+            [sys.executable, "-c", _THREAD_FAILURE_PROBE],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+    except OSError:
+        return None
+
+
 @pytest.mark.skipif(os.name != "posix", reason="RLIMIT_NPROC is POSIX-only")
 def test_failed_worker_start_raises_instead_of_aborting():
     """A worker that cannot start must raise once earlier workers have already begun.
@@ -458,10 +486,10 @@ def test_failed_worker_start_raises_instead_of_aborting():
     the error reach the caller. A thread-count assertion cannot separate the two, since
     both cap the worker count and both succeed whenever threads are available.
     """
-    result = subprocess.run(
-        [sys.executable, "-c", _THREAD_FAILURE_PROBE], capture_output=True, text=True
-    )
+    result = _run_thread_failure_probe()
 
+    if result is None:
+        pytest.skip("the inherited thread quota does not allow starting the probe")
     if result.returncode == _PROBE_INCONCLUSIVE:
         pytest.skip("could not exercise a partial pool failure in this environment")
     assert result.returncode == 0, (
@@ -473,18 +501,10 @@ def test_failed_worker_start_raises_instead_of_aborting():
 @pytest.mark.skipif(os.name != "posix", reason="RLIMIT_NPROC is POSIX-only")
 def test_probe_is_inconclusive_when_the_ceiling_cannot_be_steered():
     """A hard limit below the probe's search must skip the test, not error out of it."""
-    import resource
+    result = _run_thread_failure_probe(nproc_limit=64)
 
-    def lower_hard_limit():
-        resource.setrlimit(resource.RLIMIT_NPROC, (64, 64))
-
-    result = subprocess.run(
-        [sys.executable, "-c", _THREAD_FAILURE_PROBE],
-        capture_output=True,
-        text=True,
-        preexec_fn=lower_hard_limit,
-    )
-
+    if result is None:
+        pytest.skip("the inherited thread quota does not allow starting the probe")
     assert result.returncode == _PROBE_INCONCLUSIVE, (
         f"expected the inconclusive exit code, got {result.returncode}: "
         f"{result.stderr.strip()[-300:]}"
