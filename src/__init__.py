@@ -67,7 +67,9 @@ for file in os.listdir(_module_dir):
 # The entry point is underscored so it stays off the package's public surface, which is
 # also why it is reached through the extension module rather than through globals().
 if "_module" in globals() and hasattr(_module, "_set_sa_score_fragment_path"):
-    _module._set_sa_score_fragment_path(str(_module_dir / "data" / "sa_score_fragments.bin"))
+    _module._set_sa_score_fragment_path(
+        str(_module_dir / "data" / "sa_score_fragments.bin")
+    )
 
 
 __all__ = [

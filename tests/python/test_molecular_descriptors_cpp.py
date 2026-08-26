@@ -316,16 +316,21 @@ _PROBE_INCONCLUSIVE = 42
 
 # Aborting needs a worker to fail *after* an earlier one started: with no slots at all,
 # the first construction throws into an empty pool, which unwinds cleanly either way.
-# So the probe bisects RLIMIT_NPROC for a limit it can saturate, then frees a known
-# handful of slots and asks for more workers than that.
+# Two things make that reachable rather than hoped for. The probe saturates RLIMIT_NPROC
+# with threads it keeps alive and then *raises* the ceiling, so the free slots do not
+# depend on a joined thread having been reaped by the OS. And it only reports success
+# once a worker has demonstrably run, measured as process CPU time, so a first-worker
+# refusal reports inconclusive instead of passing.
 _THREAD_FAILURE_PROBE = """
 import resource, sys, threading
 
 INCONCLUSIVE, HEADROOM, REQUEST, CAP = 42, 2, 32, 256
+MIN_WORKER_CPU = 0.25          # seconds; one worker's chunk is ~0.6s
 
 import cuik_molmaker as cm
+
 names = cm.list_all_molecular_descriptors()
-# chunks large enough that the first workers are still running when a later one fails
+# chunks large enough that a started worker burns measurable CPU before the pool fails
 smiles = ["CC(=O)Oc1ccccc1C(=O)O"] * 12800
 cm.batch_molecular_descriptors(smiles[:1], names, 1)   # warm tables before limits
 
@@ -347,10 +352,10 @@ def hold(limit):
     return events, threads
 
 
-def release(events, threads, count=None):
-    for event in events[:count]:
+def release(events, threads):
+    for event in events:
         event.set()
-    for thread in threads[:count]:
+    for thread in threads:
         thread.join()
 
 
@@ -385,32 +390,40 @@ if target is None:
 events, threads = hold(target)
 if not HEADROOM < len(threads) < CAP:
     sys.exit(INCONCLUSIVE)
-release(events, threads, count=HEADROOM)
 
+# Holders stay alive and saturated; raising the ceiling frees exactly HEADROOM slots.
+resource.setrlimit(resource.RLIMIT_NPROC, (target + HEADROOM, hard))
+
+before = resource.getrusage(resource.RUSAGE_SELF).ru_utime
 try:
     cm.batch_molecular_descriptors(smiles, names, REQUEST)
-except Exception:
-    sys.exit(0)          # refused to start a worker and said so, rather than dying
-sys.exit(INCONCLUSIVE)   # the limit never bit, so this run proves nothing
+except Exception as exc:
+    spent = resource.getrusage(resource.RUSAGE_SELF).ru_utime - before
+    if spent < MIN_WORKER_CPU:
+        sys.exit(INCONCLUSIVE)      # no worker ran, so none started before the refusal
+    if "esource" not in str(exc):
+        sys.exit(INCONCLUSIVE)      # not the thread-creation failure this sets up
+    sys.exit(0)
+sys.exit(INCONCLUSIVE)              # the ceiling never bit, so this run proves nothing
 """
 
 
 @pytest.mark.skipif(os.name != "posix", reason="RLIMIT_NPROC is POSIX-only")
 def test_failed_worker_start_raises_instead_of_aborting():
-    """Exhausting thread handles must surface an exception, not kill the interpreter.
+    """A worker that cannot start must raise, after earlier workers have already run.
 
     Unwinding past a joinable ``std::thread`` calls ``std::terminate``, so a pool of
-    those aborts here with "terminate called without an active exception", while
-    ``std::jthread`` joins while unwinding and lets the error propagate. A thread-count
-    assertion cannot tell the two apart: both cap the worker count, and both succeed
-    whenever threads are available.
+    those aborts with "terminate called without an active exception", while
+    ``std::jthread`` joins while unwinding and lets the error propagate. Measured both
+    ways on the same machine: the old pool aborts with exit 134, this one exits 0 having
+    caught the creation error with ~0.6s of worker CPU behind it.
     """
     result = subprocess.run(
         [sys.executable, "-c", _THREAD_FAILURE_PROBE], capture_output=True, text=True
     )
 
     if result.returncode == _PROBE_INCONCLUSIVE:
-        pytest.skip("could not exhaust thread handles in this environment")
+        pytest.skip("could not exercise a partial pool failure in this environment")
     assert result.returncode == 0, (
         f"worker start failure was not raised cleanly (exit {result.returncode}): "
         f"{result.stderr.strip()[-300:]}"
