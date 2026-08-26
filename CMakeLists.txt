@@ -125,6 +125,9 @@ if(NOT CUIKMOLMAKER_BUILD_AGAINST_PIP_RDKIT)
     message(STATUS "Building against system RDKit from conda")
     find_package(RDKit REQUIRED)
     set(RDKit_LIBS
+    RDKit::ChemTransforms
+    RDKit::Descriptors
+    RDKit::Fingerprints
     RDKit::GraphMol
     RDKit::MolStandardize
     RDKit::SmilesParse
@@ -166,7 +169,8 @@ else()
   # NEEDED -- including libraries such as ChemDraw that drag in fontconfig, which the
   # target environment need not have. The names carry a per-build hash, so each surplus
   # entry also ties the artifact more tightly to one exact RDKit wheel.
-  set(RDKIT_COMPONENTS RDKitGraphMol RDKitRDGeneral RDKitSmilesParse RDKitSubstructMatch)
+  set(RDKIT_COMPONENTS RDKitChemTransforms RDKitDescriptors RDKitFingerprints
+                     RDKitGraphMol RDKitRDGeneral RDKitSmilesParse RDKitSubstructMatch)
   if(WIN32)
     file(GLOB ALL_RDKIT_FILES "${LIBDIR_NORMALIZED}/RDKit*.dll")
   else()
@@ -221,6 +225,7 @@ endif(NOT CUIKMOLMAKER_BUILD_AGAINST_PIP_RDKIT)
 add_library(cuik_molmaker_core SHARED
     src/features.cpp
     src/float_features.cpp
+    src/molecular_descriptors.cpp
     src/one_hot.cpp
     src/reaction_features.cpp
 )
