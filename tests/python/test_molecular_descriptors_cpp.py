@@ -316,16 +316,36 @@ _PROBE_INCONCLUSIVE = 42
 
 # Aborting needs a worker to fail *after* an earlier one started: with no slots at all,
 # the first construction throws into an empty pool, which unwinds cleanly either way.
-# Two things make that reachable rather than hoped for. The probe saturates RLIMIT_NPROC
-# with threads it keeps alive and then *raises* the ceiling, so the free slots do not
-# depend on a joined thread having been reaped by the OS. And it only reports success
-# once a worker has demonstrably run, measured as process CPU time, so a first-worker
-# refusal reports inconclusive instead of passing.
+# The probe therefore steers RLIMIT_NPROC to leave a known handful of slots, keeping the
+# holder threads alive and raising the ceiling rather than releasing them, so the free
+# slots do not depend on a joined thread having been reaped. Every step that cannot be
+# steered reports inconclusive, and so does a run that fails to evidence a worker having
+# started, so the probe cannot report success on a first-worker refusal.
 _THREAD_FAILURE_PROBE = """
-import resource, sys, threading
+import resource, sys
 
 INCONCLUSIVE, HEADROOM, REQUEST, CAP = 42, 2, 32, 256
-MIN_WORKER_CPU = 0.25          # seconds; one worker's chunk is ~0.6s
+MIN_WORKER_CPU = 0.25          # seconds; one worker's chunk is several times this
+SEARCH_START, SEARCH_MAX = 128, 1 << 22
+
+soft, hard = resource.getrlimit(resource.RLIMIT_NPROC)
+bounded = hard != resource.RLIM_INFINITY
+
+# Checked before the heavy imports so that an unsteerable ceiling reports inconclusive
+# rather than failing somewhere inside a dependency that wanted a thread of its own.
+if bounded and hard < SEARCH_START + HEADROOM:
+    sys.exit(INCONCLUSIVE)
+
+import threading
+
+# A ceiling already below the account's live thread count leaves nothing to steer, and
+# would otherwise surface as an import failure inside a dependency wanting a thread.
+_liveness = threading.Thread(target=lambda: None)
+try:
+    _liveness.start()
+except RuntimeError:
+    sys.exit(INCONCLUSIVE)
+_liveness.join()
 
 import cuik_molmaker as cm
 
@@ -334,11 +354,20 @@ names = cm.list_all_molecular_descriptors()
 smiles = ["CC(=O)Oc1ccccc1C(=O)O"] * 12800
 cm.batch_molecular_descriptors(smiles[:1], names, 1)   # warm tables before limits
 
-soft, hard = resource.getrlimit(resource.RLIMIT_NPROC)
+
+def set_limit(limit):
+    if bounded and limit > hard:
+        return False
+    try:
+        resource.setrlimit(resource.RLIMIT_NPROC, (limit, hard))
+    except (ValueError, OSError):
+        return False
+    return True
 
 
 def hold(limit):
-    resource.setrlimit(resource.RLIMIT_NPROC, (limit, hard))
+    if not set_limit(limit):
+        return None
     events, threads = [], []
     try:
         while len(threads) < CAP:
@@ -360,22 +389,31 @@ def release(events, threads):
 
 
 def count_at(limit):
-    events, threads = hold(limit)
-    held = len(threads)
-    release(events, threads)
-    return held
+    held = hold(limit)
+    if held is None:
+        return None
+    count = len(held[1])
+    release(*held)
+    return count
 
 
-lo, hi = 1, 128
-while count_at(hi) < CAP:
+lo, hi = 1, SEARCH_START
+while True:
+    held = count_at(hi)
+    if held is None:
+        sys.exit(INCONCLUSIVE)
+    if held >= CAP:
+        break
     lo, hi = hi, hi * 2
-    if hi > (1 << 22):
+    if hi > SEARCH_MAX or (bounded and hi > hard):
         sys.exit(INCONCLUSIVE)
 
 target = None
 while hi - lo > 1:
     mid = (lo + hi) // 2
     held = count_at(mid)
+    if held is None:
+        sys.exit(INCONCLUSIVE)
     if held >= CAP:
         hi = mid
     elif held <= HEADROOM:
@@ -384,23 +422,26 @@ while hi - lo > 1:
         target = mid
         break
 
-if target is None:
+if target is None or (bounded and target + HEADROOM > hard):
     sys.exit(INCONCLUSIVE)
 
-events, threads = hold(target)
-if not HEADROOM < len(threads) < CAP:
+saturated = hold(target)
+if saturated is None or not HEADROOM < len(saturated[1]) < CAP:
     sys.exit(INCONCLUSIVE)
 
 # Holders stay alive and saturated; raising the ceiling frees exactly HEADROOM slots.
-resource.setrlimit(resource.RLIMIT_NPROC, (target + HEADROOM, hard))
+if not set_limit(target + HEADROOM):
+    sys.exit(INCONCLUSIVE)
 
 before = resource.getrusage(resource.RUSAGE_SELF).ru_utime
 try:
     cm.batch_molecular_descriptors(smiles, names, REQUEST)
 except Exception as exc:
     spent = resource.getrusage(resource.RUSAGE_SELF).ru_utime - before
+    # ru_utime covers the whole process, so this is evidence that a worker ran, not
+    # proof that none did; too little of it simply leaves the run unable to show one.
     if spent < MIN_WORKER_CPU:
-        sys.exit(INCONCLUSIVE)      # no worker ran, so none started before the refusal
+        sys.exit(INCONCLUSIVE)
     if "esource" not in str(exc):
         sys.exit(INCONCLUSIVE)      # not the thread-creation failure this sets up
     sys.exit(0)
@@ -410,13 +451,12 @@ sys.exit(INCONCLUSIVE)              # the ceiling never bit, so this run proves 
 
 @pytest.mark.skipif(os.name != "posix", reason="RLIMIT_NPROC is POSIX-only")
 def test_failed_worker_start_raises_instead_of_aborting():
-    """A worker that cannot start must raise, after earlier workers have already run.
+    """A worker that cannot start must raise once earlier workers have already begun.
 
     Unwinding past a joinable ``std::thread`` calls ``std::terminate``, so a pool of
-    those aborts with "terminate called without an active exception", while
-    ``std::jthread`` joins while unwinding and lets the error propagate. Measured both
-    ways on the same machine: the old pool aborts with exit 134, this one exits 0 having
-    caught the creation error with ~0.6s of worker CPU behind it.
+    those aborts the interpreter, while ``std::jthread`` joins while unwinding and lets
+    the error reach the caller. A thread-count assertion cannot separate the two, since
+    both cap the worker count and both succeed whenever threads are available.
     """
     result = subprocess.run(
         [sys.executable, "-c", _THREAD_FAILURE_PROBE], capture_output=True, text=True
@@ -426,5 +466,26 @@ def test_failed_worker_start_raises_instead_of_aborting():
         pytest.skip("could not exercise a partial pool failure in this environment")
     assert result.returncode == 0, (
         f"worker start failure was not raised cleanly (exit {result.returncode}): "
+        f"{result.stderr.strip()[-300:]}"
+    )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="RLIMIT_NPROC is POSIX-only")
+def test_probe_is_inconclusive_when_the_ceiling_cannot_be_steered():
+    """A hard limit below the probe's search must skip the test, not error out of it."""
+    import resource
+
+    def lower_hard_limit():
+        resource.setrlimit(resource.RLIMIT_NPROC, (64, 64))
+
+    result = subprocess.run(
+        [sys.executable, "-c", _THREAD_FAILURE_PROBE],
+        capture_output=True,
+        text=True,
+        preexec_fn=lower_hard_limit,
+    )
+
+    assert result.returncode == _PROBE_INCONCLUSIVE, (
+        f"expected the inconclusive exit code, got {result.returncode}: "
         f"{result.stderr.strip()[-300:]}"
     )
