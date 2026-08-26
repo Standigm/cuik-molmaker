@@ -461,7 +461,12 @@ sys.exit(INCONCLUSIVE)              # the ceiling never bit, so this run proves 
 
 
 def _run_thread_failure_probe(nproc_limit=None):
-    """Run the probe, or return None if the inherited quota forbids another process."""
+    """Run the probe, or return None if the child process could not be started.
+
+    Starting it fails for more than one reason -- an inherited thread quota that
+    forbids another process is only the case this suite steers deliberately -- so any
+    launch failure leaves the run unable to say anything about the pool.
+    """
     env = dict(os.environ)
     if nproc_limit is not None:
         env["CUIK_MOLMAKER_TEST_NPROC_LIMIT"] = str(nproc_limit)
@@ -489,7 +494,7 @@ def test_failed_worker_start_raises_instead_of_aborting():
     result = _run_thread_failure_probe()
 
     if result is None:
-        pytest.skip("the inherited thread quota does not allow starting the probe")
+        pytest.skip("the probe could not be started in this environment")
     if result.returncode == _PROBE_INCONCLUSIVE:
         pytest.skip("could not exercise a partial pool failure in this environment")
     assert result.returncode == 0, (
@@ -504,7 +509,7 @@ def test_probe_is_inconclusive_when_the_ceiling_cannot_be_steered():
     result = _run_thread_failure_probe(nproc_limit=64)
 
     if result is None:
-        pytest.skip("the inherited thread quota does not allow starting the probe")
+        pytest.skip("the probe could not be started in this environment")
     assert result.returncode == _PROBE_INCONCLUSIVE, (
         f"expected the inconclusive exit code, got {result.returncode}: "
         f"{result.stderr.strip()[-300:]}"
