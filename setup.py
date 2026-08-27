@@ -14,7 +14,11 @@ from setuptools import Extension, find_packages, setup
 from setuptools.command.build_ext import build_ext
 
 # Version for the cuik_molmaker package (cuik_molmaker_pin uses RDKIT_VERSION instead).
-CUIK_MOLMAKER_VERSION = "0.3.0"
+# Overridable so a release tag stamps its own: two tags that publish one distribution
+# version leave pip treating a pinned direct reference as already satisfied, so a consumer
+# upgrading between them keeps the older wheel and reports success. ci/build-wheel.sh
+# derives it from the tag.
+CUIK_MOLMAKER_VERSION = os.environ.get("CUIK_MOLMAKER_VERSION") or "0.3.0"
 
 # Set global vars
 RDKIT_VERSION = os.environ.get("RDKIT_VERSION")
