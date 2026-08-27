@@ -17,6 +17,15 @@ SRC=${SRC:-/src}
 OUT=${OUT:-/out}
 PYBIN=/opt/python/${PY_TAG}-${PY_TAG}/bin
 
+# A release tag becomes the wheel's version: v0.3.0-standigm.4 -> 0.3.0+standigm.4, the
+# PEP 440 local version, which sorts above plain 0.3.0 and names the fork in `pip show`.
+# Without it every Standigm tag republishes 0.3.0 and pip, seeing a pinned direct
+# reference already satisfied, silently keeps whichever wheel is installed.
+if [ -z "${CUIK_MOLMAKER_VERSION:-}" ] && [ "${GITHUB_REF_TYPE:-}" = tag ]; then
+  CUIK_MOLMAKER_VERSION=$(printf '%s' "${GITHUB_REF_NAME#v}" | sed 's/-/+/')
+fi
+export CUIK_MOLMAKER_VERSION="${CUIK_MOLMAKER_VERSION:-}"
+
 echo "::group::${PY_TAG}: dependencies"
 if [ ! -d /opt/hdr ]; then
   curl -Ls https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xj -C /usr/local bin/micromamba
