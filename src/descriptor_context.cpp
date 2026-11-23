@@ -3,6 +3,8 @@
 
 #include "descriptor_context.h"
 
+#include "characteristic_polynomial.h"
+
 // clang-format off
 // BCUT.h declares BCUT2D only when RDK_HAS_EIGEN3 is defined, which RDConfig.h does, so
 // include sorting must not reorder these two.
@@ -203,6 +205,13 @@ size_t DescriptorContext::morgan_environment_count(unsigned int radius) {
     count = fingerprint->getNonzeroElements().size();
   }
   return *count;
+}
+
+const std::vector<double>& DescriptorContext::characteristic_polynomial() {
+  if (!characteristic_polynomial_) {
+    characteristic_polynomial_ = characteristic_polynomial_magnitudes(mol_);
+  }
+  return *characteristic_polynomial_;
 }
 
 const std::vector<double>& DescriptorContext::bcut2d() {

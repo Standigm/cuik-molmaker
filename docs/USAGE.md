@@ -160,14 +160,16 @@ print(rdkit2D_descriptors.min(), rdkit2D_descriptors.max()) # (0.0, 1.0)
 
 #### Compute descriptors in C++
 `MoleculeFeaturizer` evaluates every RDKit 2D descriptor in Python. `batch_molecular_descriptors`
-computes them in C++ across threads instead: every name in RDKit's `Descriptors._descList`
-except `Ipc` and `AvgIpc`, plus `SAScore`. Each value matches RDKit's Python; descriptors
-that read the same intermediate, such as the E-state indices or the Gasteiger charges,
-compute it once per molecule.
+computes them in C++ across threads instead: every name in RDKit's `Descriptors._descList`,
+plus `SAScore`. Each value matches RDKit's Python; descriptors that read the same
+intermediate, such as the E-state indices or the Gasteiger charges, compute it once per
+molecule.
 
-`Ipc` and `AvgIpc` stay in RDKit: its characteristic polynomial goes through `numpy.dot`,
-so for large molecules the value depends on the BLAS build and no fixed C++ summation
-order reproduces it.
+`Ipc` and `AvgIpc` are the exception. They come from the characteristic polynomial of the
+adjacency matrix, whose coefficients are integers, and cuik-molmaker computes them exactly.
+RDKit 2026.03 runs a floating-point recursion that agrees exactly for small molecules but
+loses all precision above about 65 atoms; RDKit 2026.09.2 and later expand from
+eigenvalues, so they agree to about 1e-13.
 
 ```python
 import cuik_molmaker

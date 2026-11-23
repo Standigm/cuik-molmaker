@@ -19,6 +19,7 @@ import pytest
 from rdkit import Chem
 from rdkit.Chem import Descriptors
 from rdkit.Chem import rdMolDescriptors as rdmd
+from rdkit.ML.InfoTheory import entropy
 from rdkit.RDConfig import RDContribDir
 
 import cuik_molmaker
@@ -41,10 +42,50 @@ REFERENCE_FNS = {
     for name in cuik_molmaker.list_all_molecular_descriptors()
     if name in _RDKIT_FNS
 }
+
+
+def _exact_characteristic_polynomial(mol):
+    """|coefficients| of det(xI - A) by Faddeev-LeVerrier over Python ints, each rounded
+    to double once: M_k = A (M_{k-1} + c_{k-1} I), c_k = -tr(M_k) / k."""
+    n = mol.GetNumAtoms()
+    if n == 0:
+        raise ValueError("no atoms")
+    neighbours = [
+        [nbr.GetIdx() for nbr in atom.GetNeighbors()] for atom in mol.GetAtoms()
+    ]
+    m = np.zeros((n, n), dtype=object)
+    coefficients = [1]
+    for k in range(1, n + 1):
+        m[np.diag_indices(n)] += coefficients[-1]
+        m = np.array(
+            [
+                m[nbrs].sum(axis=0) if nbrs else np.zeros(n, dtype=object)
+                for nbrs in neighbours
+            ],
+            dtype=object,
+        )
+        coefficients.append(-sum(m[i, i] for i in range(n)) // k)
+    return np.array([float(abs(c)) for c in coefficients])
+
+
+def _exact_ipc(mol):
+    coefficients = _exact_characteristic_polynomial(mol)
+    return sum(coefficients) * entropy.InfoEntropy(coefficients)
+
+
+def _exact_avg_ipc(mol):
+    return entropy.InfoEntropy(_exact_characteristic_polynomial(mol))
+
+
 REFERENCE_FNS.update(
     {
         "HallKierAlpha": rdmd.CalcHallKierAlpha,
         "SAScore": sascorer.calculateScore,
+        # RDKit 2026.03 runs the Le Verrier-Faddeev recursion in floating point: exact
+        # up to about 65 atoms, drifting beyond. The C++ follows the exact
+        # polynomial, which this computes from integers.
+        "Ipc": _exact_ipc,
+        "AvgIpc": _exact_avg_ipc,
     }
 )
 
@@ -621,3 +662,60 @@ def test_probe_is_inconclusive_when_the_ceiling_cannot_be_steered():
         f"expected the inconclusive exit code, got {result.returncode}: "
         f"{result.stderr.strip()[-300:]}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Ipc and AvgIpc: exact at every size.
+# ---------------------------------------------------------------------------
+
+
+def test_ipc_matches_rdkit_where_its_recursion_is_exact(valid_smiles):
+    computed = cuik_molmaker.batch_molecular_descriptors(
+        valid_smiles, ["Ipc", "AvgIpc"], 4
+    )
+    reference = np.array(
+        [
+            [
+                _RDKIT_FNS["Ipc"](Chem.MolFromSmiles(smi)),
+                _RDKIT_FNS["AvgIpc"](Chem.MolFromSmiles(smi)),
+            ]
+            for smi in valid_smiles
+        ]
+    )
+
+    np.testing.assert_array_equal(computed, reference)
+
+
+@pytest.mark.parametrize("residues", (20, 30, 40))
+def test_ipc_is_exact_where_floating_point_recursion_is_not(residues):
+    """Polyalanine of 101 to 201 atoms needs 64- to 256-bit integers."""
+    mol = Chem.MolFromSequence("A" * residues)
+
+    computed = cuik_molmaker.batch_molecular_descriptors_from_binary(
+        [mol.ToBinary()], ["Ipc", "AvgIpc"], 1
+    )[0]
+
+    assert computed.tolist() == [_exact_ipc(mol), _exact_avg_ipc(mol)]
+    assert abs(_RDKIT_FNS["AvgIpc"](mol) - computed[1]) > 1e-6 * computed[1]
+
+
+def test_ipc_of_a_large_molecule_agrees_with_the_eigenvalue_expansion():
+    """501 atoms, coefficients of 315 bits: too slow for the Python reference, so the
+    exact value is held to RDKit master's eigenvalue expansion, accurate to ~1e-13."""
+    mol = Chem.MolFromSequence("A" * 100)
+    adjacency = Chem.GetAdjacencyMatrix(mol).astype(float)
+    roots = np.linalg.eigvalsh(adjacency)
+    expanded = np.array([1.0])
+    for root in roots[np.argsort(np.abs(roots))]:
+        expanded = np.convolve(expanded, [1.0, -root])
+    expanded = np.abs(expanded)
+
+    ipc, avg_ipc = cuik_molmaker.batch_molecular_descriptors_from_binary(
+        [mol.ToBinary()], ["Ipc", "AvgIpc"], 1
+    )[0]
+
+    assert avg_ipc == pytest.approx(entropy.InfoEntropy(expanded), rel=1e-11)
+    assert ipc == pytest.approx(
+        sum(expanded) * entropy.InfoEntropy(expanded), rel=1e-11
+    )
+    assert avg_ipc <= np.log2(mol.GetNumAtoms() + 1)

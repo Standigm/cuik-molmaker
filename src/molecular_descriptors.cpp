@@ -826,6 +826,48 @@ double descriptor_sps(DescriptorContext& ctx) {
   return static_cast<double>(score) / heavy_atoms;
 }
 
+//! `rdkit.ML.InfoTheory.entropy.InfoEntropy` on doubles, operation for operation: natural
+//! logarithms, converted to bits once at the end.
+double rdkit_info_entropy(const std::vector<double>& counts) {
+  double total = 0.0;
+  for (const double count : counts) {
+    total += count;
+  }
+  double accumulated = 0.0;
+  if (total != 0.0) {
+    for (const double count : counts) {
+      const double share = count / total;
+      if (share != 0.0) {
+        accumulated += -share * std::log(share);
+      }
+    }
+  }
+  return accumulated / std::log(2.0);
+}
+
+const std::vector<double>& nonempty_characteristic_polynomial(DescriptorContext& ctx) {
+  const std::vector<double>& coefficients = ctx.characteristic_polynomial();
+  if (coefficients.empty()) {
+    throw std::invalid_argument("Ipc is not defined for a molecule with no atoms");
+  }
+  return coefficients;
+}
+
+//! `GraphDescriptors.AvgIpc`: entropy of the characteristic polynomial's |coefficients|.
+double descriptor_avg_ipc(DescriptorContext& ctx) {
+  return rdkit_info_entropy(nonempty_characteristic_polynomial(ctx));
+}
+
+//! `GraphDescriptors.Ipc`: their sum times that entropy.
+double descriptor_ipc(DescriptorContext& ctx) {
+  const std::vector<double>& coefficients = nonempty_characteristic_polynomial(ctx);
+  double                     total        = 0.0;
+  for (const double c : coefficients) {
+    total += c;
+  }
+  return total * rdkit_info_entropy(coefficients);
+}
+
 //! The fr_* SMARTS, compiled once.
 const std::vector<std::unique_ptr<RDKit::ROMol>>& fragment_patterns() {
   static const std::vector<std::unique_ptr<RDKit::ROMol>> patterns = [] {
@@ -874,9 +916,7 @@ template <size_t... Bin> void append_slogp_vsa(DescriptorTable& table, std::inde
 
 //! Every descriptor the batch entry points accept, in the order they are listed.
 //!
-//! The names are RDKit's (`Descriptors._descList`), plus SAScore. Ipc and AvgIpc are left
-//! out: RDKit's characteristic polynomial runs through numpy.dot, so its value depends on
-//! the BLAS summation order and no fixed order reproduces it for large molecules.
+//! The names are RDKit's (`Descriptors._descList`), plus SAScore.
 const DescriptorTable& descriptor_table() {
   using namespace RDKit::Descriptors;
   static const DescriptorTable table = [] {
@@ -926,6 +966,8 @@ const DescriptorTable& descriptor_table() {
       {"Chi3v", descriptor_chi<calcChi3v>},
       {"Chi4n", descriptor_chi<calcChi4n>},
       {"Chi4v", descriptor_chi<calcChi4v>},
+      {"Ipc", descriptor_ipc},
+      {"AvgIpc", descriptor_avg_ipc},
       {"Kappa1", descriptor_value<calcKappa1>},
       {"Kappa2", descriptor_value<calcKappa2>},
       {"Kappa3", descriptor_value<calcKappa3>},

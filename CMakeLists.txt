@@ -228,6 +228,7 @@ endif(NOT CUIKMOLMAKER_BUILD_AGAINST_PIP_RDKIT)
 
 # Create the core library that can be used by pybind11 and tests
 add_library(cuik_molmaker_core SHARED
+    src/characteristic_polynomial.cpp
     src/descriptor_context.cpp
     src/features.cpp
     src/float_features.cpp

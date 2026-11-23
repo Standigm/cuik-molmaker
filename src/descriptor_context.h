@@ -63,6 +63,10 @@ class DescriptorContext {
   //! The eight BCUT2D eigenvalues, in RDKit's `BCUT2D_*` order.
   const std::vector<double>& bcut2d();
 
+  //! |c_0| .. |c_n| of the adjacency matrix's characteristic polynomial; see
+  //! characteristic_polynomial.h.
+  const std::vector<double>& characteristic_polynomial();
+
  private:
   const RDKit::ROMol&                      mol_;
   const double*                            bond_order_distances_  = nullptr;
@@ -75,6 +79,7 @@ class DescriptorContext {
   std::optional<std::pair<double, double>> gasteiger_extrema_;
   std::array<std::optional<size_t>, 4>     morgan_environment_counts_;
   std::optional<std::vector<double>>       bcut2d_;
+  std::optional<std::vector<double>>       characteristic_polynomial_;
 };
 
 //! The bond-order distance matrix, recomputed, for callers without a context.

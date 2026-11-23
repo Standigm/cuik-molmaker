@@ -5,11 +5,13 @@
 //!       Python, plus the batch entry point that computes a descriptor table across
 //!       many molecules at once. Implementations are in molecular_descriptors.cpp.
 //!
-//!       The table covers RDKit's `Descriptors._descList` except Ipc and AvgIpc, plus
-//!       SAScore. RDKit implements part of that list only in Python -- BertzCT, BalabanJ,
-//!       qed, the E-state family, SPS, Chi0/Chi1, the partial-charge extrema and others --
-//!       and those are ported with their exact arithmetic; the rest call RDKit's C++ with
-//!       the defaults its Python wrappers use. Every value matches RDKit's Python.
+//!       The table covers RDKit's `Descriptors._descList`, plus SAScore. RDKit implements
+//!       part of that list only in Python -- BertzCT, BalabanJ, qed, the E-state family,
+//!       SPS, Chi0/Chi1, the partial-charge extrema and others -- and those are ported with
+//!       their exact arithmetic; the rest call RDKit's C++ with the defaults its Python
+//!       wrappers use. Every value matches RDKit's Python, except that Ipc and AvgIpc come
+//!       from the exact characteristic polynomial (characteristic_polynomial.h), which
+//!       RDKit 2026.03's floating-point recursion matches only up to about 65 atoms.
 
 #pragma once
 
