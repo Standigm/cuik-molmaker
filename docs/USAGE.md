@@ -158,9 +158,16 @@ print(rdkit2D_descriptors.min(), rdkit2D_descriptors.max()) # (0.0, 1.0)
 
 
 
-#### Compute selected descriptors in C++
-`MoleculeFeaturizer` evaluates every RDKit 2D descriptor in Python. When only a few are
-needed, `batch_molecular_descriptors` computes them in C++ across threads instead.
+#### Compute descriptors in C++
+`MoleculeFeaturizer` evaluates every RDKit 2D descriptor in Python. `batch_molecular_descriptors`
+computes them in C++ across threads instead: every name in RDKit's `Descriptors._descList`
+except `Ipc` and `AvgIpc`, plus `SAScore`. Each value matches RDKit's Python; descriptors
+that read the same intermediate, such as the E-state indices or the Gasteiger charges,
+compute it once per molecule.
+
+`Ipc` and `AvgIpc` stay in RDKit: its characteristic polynomial goes through `numpy.dot`,
+so for large molecules the value depends on the BLAS build and no fixed C++ summation
+order reproduces it.
 
 ```python
 import cuik_molmaker
@@ -177,8 +184,13 @@ descriptors = ["qed", "MolLogP", "SAScore"]
 values = cuik_molmaker.batch_molecular_descriptors(smiles_list, descriptors, 0)
 
 # One row per molecule, one column per requested descriptor, in the order requested.
-# A SMILES that does not parse gives a row of NaN rather than raising.
+# A SMILES that does not parse gives a row of NaN rather than raising. For a sanitized
+# molecule a cell is NaN wherever RDKit's Python would raise, so a caller can fall back to
+# RDKit for it.
 print(values.shape) # (2, 3)
+
+# Every column is float64. These are counts, which RDKit's Python returns as int:
+print(cuik_molmaker.list_integer_molecular_descriptors())
 ```
 
 If you already hold RDKit molecules, pass them as binary pickles instead of SMILES.

@@ -3,9 +3,11 @@
 
 """Parity tests for the C++ molecular descriptors.
 
-``BertzCT``, ``BalabanJ``, ``qed`` and the SA score have no RDKit C++ implementation
-and are ported in ``molecular_descriptors.cpp``; these tests hold them to the values
-RDKit's Python produces, since a port is only worth having if it changes nothing.
+Part of RDKit's descriptor list -- ``BertzCT``, ``BalabanJ``, ``qed``, the E-state
+family, ``SPS`` and others -- has no RDKit C++ implementation and is ported in
+``molecular_descriptors.cpp``; the rest wraps RDKit's C++. These tests hold every one
+to the value RDKit's Python produces, since a port is only worth having if it changes
+nothing.
 """
 
 import os
@@ -32,17 +34,19 @@ _RDKIT_FNS = dict(Descriptors._descList)
 # out low precisely when it is wrong.
 SA_SMOOTHING_BOUNDARY = 8.0
 
+# A descriptor RDKit lists is held to RDKit's own Python function of the same name; the
+# rest need an explicit reference, so a new one without it fails the coverage test.
 REFERENCE_FNS = {
-    "qed": _RDKIT_FNS["qed"],
-    "MolWt": _RDKIT_FNS["MolWt"],
-    "BalabanJ": _RDKIT_FNS["BalabanJ"],
-    "BertzCT": _RDKIT_FNS["BertzCT"],
-    "HallKierAlpha": rdmd.CalcHallKierAlpha,
-    "TPSA": _RDKIT_FNS["TPSA"],
-    "MolLogP": _RDKIT_FNS["MolLogP"],
-    "MolMR": _RDKIT_FNS["MolMR"],
-    "SAScore": sascorer.calculateScore,
+    name: _RDKIT_FNS[name]
+    for name in cuik_molmaker.list_all_molecular_descriptors()
+    if name in _RDKIT_FNS
 }
+REFERENCE_FNS.update(
+    {
+        "HallKierAlpha": rdmd.CalcHallKierAlpha,
+        "SAScore": sascorer.calculateScore,
+    }
+)
 
 # Reference values from RDKit PR #9501, which ports the SA score to C++ and fixes the
 # normalization. Reproducing them is what makes this implementation the corrected one.
@@ -83,6 +87,20 @@ def valid_smiles(smiles_list_100):
 
 def test_listed_descriptors_all_have_references():
     assert set(cuik_molmaker.list_all_molecular_descriptors()) == set(REFERENCE_FNS)
+
+
+def test_integer_descriptors_are_those_rdkit_returns_as_int(valid_smiles):
+    names = cuik_molmaker.list_all_molecular_descriptors()
+    integer = set(cuik_molmaker.list_integer_molecular_descriptors())
+    mols = [Chem.MolFromSmiles(smi) for smi in valid_smiles]
+
+    returns_int = {
+        name
+        for name in names
+        if all(isinstance(REFERENCE_FNS[name](Chem.Mol(mol)), int) for mol in mols)
+    }
+
+    assert integer == returns_int
 
 
 def test_sample_stays_below_sa_boundary(valid_smiles):
@@ -143,6 +161,23 @@ def test_sa_score_corrects_the_contrib_discontinuity():
         < sascorer.calculateScore(Chem.MolFromSmiles("CC(=O)Oc1ccccc1C(=O)O")) + 3.0
     )
     assert contrib < SA_SMOOTHING_BOUNDARY
+
+
+def test_one_request_matches_a_request_per_name(valid_smiles):
+    """Descriptors of one molecule share intermediates; sharing must not change a value,
+    whichever names are requested together and in whatever order."""
+    names = cuik_molmaker.list_all_molecular_descriptors()
+    together = cuik_molmaker.batch_molecular_descriptors(valid_smiles, names, 4)
+
+    for column, name in enumerate(names):
+        alone = cuik_molmaker.batch_molecular_descriptors(valid_smiles, [name], 4)
+        np.testing.assert_array_equal(together[:, column], alone[:, 0], err_msg=name)
+
+    order = np.random.default_rng(0).permutation(len(names))
+    shuffled = cuik_molmaker.batch_molecular_descriptors(
+        valid_smiles, [names[i] for i in order], 4
+    )
+    np.testing.assert_array_equal(shuffled, together[:, order])
 
 
 def test_thread_count_does_not_change_results(valid_smiles):
@@ -230,6 +265,33 @@ def test_binary_matches_smiles_for_implicit_hydrogen_molecules(valid_smiles):
     )
 
 
+def _kekulized(smiles):
+    mol = Chem.MolFromSmiles(smiles)
+    Chem.Kekulize(mol, clearAromaticFlags=True)
+    return mol
+
+
+def test_binary_keeps_a_kekulized_molecule_kekulized(valid_smiles):
+    """The pickle carries the caller's aromaticity; re-aromatizing it anywhere, as
+    sanitizing would, changes values RDKit computes on the Kekule form."""
+    names = cuik_molmaker.list_all_molecular_descriptors()
+    mols = [_kekulized(smi) for smi in valid_smiles]
+
+    computed = cuik_molmaker.batch_molecular_descriptors_from_binary(
+        [mol.ToBinary() for mol in mols], names, 4
+    )
+    reference = np.array(
+        [[_reference_or_nan(name, mol) for name in names] for mol in mols]
+    )
+
+    sa_column = names.index("SAScore")
+    beyond = computed[:, sa_column] > SA_SMOOTHING_BOUNDARY
+    reference[beyond, sa_column] = computed[beyond, sa_column]
+    np.testing.assert_allclose(
+        computed, reference, rtol=1e-12, atol=1e-12, equal_nan=True
+    )
+
+
 @pytest.mark.parametrize("descriptor_name", sorted(REFERENCE_FNS))
 def test_binary_preserves_explicit_hydrogens(valid_smiles, descriptor_name):
     """The binary path must agree with RDKit on the caller's actual molecule."""
@@ -287,6 +349,51 @@ def test_sa_score_rejects_a_molecule_with_no_atoms():
 
     with pytest.raises(ValueError, match="no atoms"):
         cuik_molmaker.sa_score("")
+
+
+# Inputs at the edges of what descriptors handle: no atoms, a lone atom, no heavy atoms,
+# no bonds, a bare metal, a dummy atom, isotopes.
+DEGENERATE_SMILES = (
+    "",
+    "C",
+    "[H][H]",
+    "[Na+].[Cl-]",
+    "[Fe+2]",
+    "O",
+    "*C",
+    "[2H]C([2H])([2H])[2H]",
+)
+
+
+def _reference_or_nan(name, mol):
+    try:
+        value = REFERENCE_FNS[name](Chem.Mol(mol))
+    except Exception:
+        return float("nan")
+    return float("nan") if value is None else float(value)
+
+
+@pytest.mark.parametrize("smiles", DEGENERATE_SMILES)
+def test_degenerate_molecules_match_rdkit_or_report_nan(smiles):
+    """Where RDKit raises, the cell must be NaN, so a caller can fall back to RDKit and
+    get its exception; everywhere else the value must be RDKit's."""
+    names = cuik_molmaker.list_all_molecular_descriptors()
+    mol = Chem.MolFromSmiles(smiles)
+
+    computed = cuik_molmaker.batch_molecular_descriptors_from_binary(
+        [mol.ToBinary()], names, 1
+    )[0]
+    reference = np.array([_reference_or_nan(name, mol) for name in names])
+
+    sa_column = names.index("SAScore")
+    if computed[sa_column] > SA_SMOOTHING_BOUNDARY:
+        reference[sa_column] = computed[sa_column]
+    mismatched = [
+        (name, c, r)
+        for name, c, r in zip(names, computed, reference)
+        if not np.isclose(c, r, rtol=1e-12, atol=1e-12, equal_nan=True)
+    ]
+    assert not mismatched
 
 
 def test_batch_reports_a_rejected_molecule_as_nan():

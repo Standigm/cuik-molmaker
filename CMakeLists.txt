@@ -58,10 +58,13 @@ else()
 endif()
 
 # Platform-specific compiler flags
+# The descriptor ports reproduce RDKit's Python arithmetic operation by operation, so a
+# contracted multiply-add -- which GCC emits whenever the target has FMA -- would change
+# their results in the last bits.
 if(MSVC)
     add_compile_options(/O2 /W4)
 else()
-    add_compile_options(-O3 -Wall -Wmissing-field-initializers -Wmaybe-uninitialized -Wuninitialized)
+    add_compile_options(-O3 -ffp-contract=off -Wall -Wmissing-field-initializers -Wmaybe-uninitialized -Wuninitialized)
 endif()
 
 # Windows-specific: Tell RDKit we're importing from DLLs
@@ -130,6 +133,7 @@ if(NOT CUIKMOLMAKER_BUILD_AGAINST_PIP_RDKIT)
     RDKit::Fingerprints
     RDKit::GraphMol
     RDKit::MolStandardize
+    RDKit::PartialCharges
     RDKit::SmilesParse
     )
 
@@ -170,7 +174,8 @@ else()
   # target environment need not have. The names carry a per-build hash, so each surplus
   # entry also ties the artifact more tightly to one exact RDKit wheel.
   set(RDKIT_COMPONENTS RDKitChemTransforms RDKitDescriptors RDKitFingerprints
-                     RDKitGraphMol RDKitRDGeneral RDKitSmilesParse RDKitSubstructMatch)
+                     RDKitGraphMol RDKitPartialCharges RDKitRDGeneral RDKitSmilesParse
+                     RDKitSubstructMatch)
   if(WIN32)
     file(GLOB ALL_RDKIT_FILES "${LIBDIR_NORMALIZED}/RDKit*.dll")
   else()
@@ -223,6 +228,7 @@ endif(NOT CUIKMOLMAKER_BUILD_AGAINST_PIP_RDKIT)
 
 # Create the core library that can be used by pybind11 and tests
 add_library(cuik_molmaker_core SHARED
+    src/descriptor_context.cpp
     src/features.cpp
     src/float_features.cpp
     src/molecular_descriptors.cpp
