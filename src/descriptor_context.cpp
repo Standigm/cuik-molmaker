@@ -177,6 +177,27 @@ const std::array<double, 10>& DescriptorContext::vsa_estate() {
   return *vsa_estate_;
 }
 
+const std::vector<double>& DescriptorContext::peoe_vsa() {
+  if (!peoe_vsa_) {
+    peoe_vsa_ = RDKit::Descriptors::calcPEOE_VSA(mol_);
+  }
+  return *peoe_vsa_;
+}
+
+const std::vector<double>& DescriptorContext::smr_vsa() {
+  if (!smr_vsa_) {
+    smr_vsa_ = RDKit::Descriptors::calcSMR_VSA(mol_);
+  }
+  return *smr_vsa_;
+}
+
+const std::vector<double>& DescriptorContext::slogp_vsa() {
+  if (!slogp_vsa_) {
+    slogp_vsa_ = RDKit::Descriptors::calcSlogP_VSA(mol_);
+  }
+  return *slogp_vsa_;
+}
+
 const std::pair<double, double>& DescriptorContext::gasteiger_extrema() {
   if (!gasteiger_extrema_) {
     RDKit::computeGasteigerCharges(mol_, /*nIter=*/12, /*throwOnParamFailure=*/false);

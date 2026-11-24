@@ -684,15 +684,14 @@ double descriptor_num_unspecified_atom_stereo_centers(DescriptorContext& ctx) {
 double descriptor_labute_asa(DescriptorContext& ctx) {
   return RDKit::Descriptors::calcLabuteASA(ctx.mol(), /*includeHs=*/true, /*force=*/false);
 }
-// The *_VSA families compute every bin at once and cache the vector on the molecule.
 template <size_t Bin> double descriptor_peoe_vsa(DescriptorContext& ctx) {
-  return RDKit::Descriptors::calcPEOE_VSA(ctx.mol()).at(Bin);
+  return ctx.peoe_vsa().at(Bin);
 }
 template <size_t Bin> double descriptor_smr_vsa(DescriptorContext& ctx) {
-  return RDKit::Descriptors::calcSMR_VSA(ctx.mol()).at(Bin);
+  return ctx.smr_vsa().at(Bin);
 }
 template <size_t Bin> double descriptor_slogp_vsa(DescriptorContext& ctx) {
-  return RDKit::Descriptors::calcSlogP_VSA(ctx.mol()).at(Bin);
+  return ctx.slogp_vsa().at(Bin);
 }
 template <size_t Index> double descriptor_bcut2d(DescriptorContext& ctx) {
   return ctx.bcut2d().at(Index);

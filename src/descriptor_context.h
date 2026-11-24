@@ -54,6 +54,12 @@ class DescriptorContext {
   //! E-state summed within each Labute ASA bin: `VSA_EState1` .. `VSA_EState10`.
   const std::array<double, 10>& vsa_estate();
 
+  //! RDKit's `PEOE_VSA`, `SMR_VSA` and `SlogP_VSA` bin vectors. Each call into RDKit
+  //! computes every bin of a family, and `calcPEOE_VSA` its Gasteiger charges too.
+  const std::vector<double>& peoe_vsa();
+  const std::vector<double>& smr_vsa();
+  const std::vector<double>& slogp_vsa();
+
   //! Lowest and highest Gasteiger charge, reduced exactly as `Descriptors._ChargeDescriptors`
   //! does, including its starting values and its handling of NaN charges.
   const std::pair<double, double>& gasteiger_extrema();
@@ -78,6 +84,9 @@ class DescriptorContext {
   std::optional<std::vector<double>>       labute_atom_contribs_;
   std::optional<std::array<double, 11>>    estate_vsa_;
   std::optional<std::array<double, 10>>    vsa_estate_;
+  std::optional<std::vector<double>>       peoe_vsa_;
+  std::optional<std::vector<double>>       smr_vsa_;
+  std::optional<std::vector<double>>       slogp_vsa_;
   std::optional<std::pair<double, double>> gasteiger_extrema_;
   std::array<std::optional<size_t>, 4>     morgan_environment_counts_;
   std::optional<std::vector<double>>       bcut2d_;
