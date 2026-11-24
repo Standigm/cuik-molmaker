@@ -11,7 +11,17 @@
 
 namespace cuik_molmaker {
 
-//! |c_0| .. |c_n| of det(xI - A) for the molecule's adjacency matrix A, as doubles.
+//! |c_0| .. |c_n| of a characteristic polynomial, as `scaled[k]` * 2^`exponent`.
+//!
+//! The exponent is 0 unless the sum of the magnitudes would overflow a double. Then every
+//! magnitude is divided by the same power of two, which leaves their ratios -- and so the
+//! entropy behind AvgIpc -- unchanged.
+struct PolynomialMagnitudes {
+  std::vector<double> scaled;  //!< leading coefficient first
+  int                 exponent = 0;
+};
+
+//! |c_0| .. |c_n| of det(xI - A) for the molecule's adjacency matrix A.
 //!
 //! The coefficients are integers and are computed exactly, then each rounded to double
 //! once. det(xI - A) is evaluated modulo 62-bit primes at n + 1 points by an elimination
@@ -23,9 +33,9 @@ namespace cuik_molmaker {
 //! and later expand from eigenvalues, within about 1e-13.
 //!
 //! @param mol Molecule whose atoms and bonds define the graph, hydrogens included as present
-//! @return n + 1 magnitudes, leading coefficient first; empty for a molecule with no atoms
+//! @return n + 1 magnitudes; `scaled` is empty for a molecule with no atoms
 //! @throws std::range_error past about 3,000 atoms of a typical molecular graph, where the
 //!         coefficients outgrow the prime table and Ipc is far beyond the double range anyway
-std::vector<double> characteristic_polynomial_magnitudes(const RDKit::ROMol& mol);
+PolynomialMagnitudes characteristic_polynomial_magnitudes(const RDKit::ROMol& mol);
 
 }  // namespace cuik_molmaker

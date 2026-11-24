@@ -13,6 +13,8 @@
 #include <utility>
 #include <vector>
 
+#include "characteristic_polynomial.h"
+
 namespace cuik_molmaker {
 
 //! Intermediates that several descriptors of one molecule share, each computed on first use.
@@ -65,7 +67,7 @@ class DescriptorContext {
 
   //! |c_0| .. |c_n| of the adjacency matrix's characteristic polynomial; see
   //! characteristic_polynomial.h.
-  const std::vector<double>& characteristic_polynomial();
+  const PolynomialMagnitudes& characteristic_polynomial();
 
  private:
   const RDKit::ROMol&                      mol_;
@@ -79,7 +81,7 @@ class DescriptorContext {
   std::optional<std::pair<double, double>> gasteiger_extrema_;
   std::array<std::optional<size_t>, 4>     morgan_environment_counts_;
   std::optional<std::vector<double>>       bcut2d_;
-  std::optional<std::vector<double>>       characteristic_polynomial_;
+  std::optional<PolynomialMagnitudes>      characteristic_polynomial_;
 };
 
 //! The bond-order distance matrix, recomputed, for callers without a context.

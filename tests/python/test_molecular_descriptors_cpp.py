@@ -10,6 +10,7 @@ to the value RDKit's Python produces, since a port is only worth having if it ch
 nothing.
 """
 
+import math
 import os
 import subprocess
 import sys
@@ -719,3 +720,30 @@ def test_ipc_of_a_large_molecule_agrees_with_the_eigenvalue_expansion():
         sum(expanded) * entropy.InfoEntropy(expanded), rel=1e-11
     )
     assert avg_ipc <= np.log2(mol.GetNumAtoms() + 1)
+
+
+def _chain_avg_ipc(atoms):
+    """AvgIpc of an unbranched chain from its exact characteristic polynomial,
+    p_k = x p_(k-1) - p_(k-2), with every share taken from integers rather than from a
+    sum of doubles."""
+    previous, current = [1], [1, 0]
+    for _ in range(atoms - 1):
+        following = current + [0]
+        for i, c in enumerate(previous):
+            following[i + 2] -= c
+        previous, current = current, following
+    magnitudes = [abs(c) for c in current if c]
+    total = sum(magnitudes)
+    return -sum(c / total * (math.log2(c) - math.log2(total)) for c in magnitudes)
+
+
+@pytest.mark.parametrize("atoms", (1476, 1500))
+def test_avg_ipc_stays_finite_where_ipc_leaves_the_double_range(atoms):
+    """At 1,476 atoms every coefficient fits in a double but their sum does not; at
+    1,500 the largest coefficient does not fit either."""
+    ipc, avg_ipc = cuik_molmaker.batch_molecular_descriptors(
+        ["C" * atoms], ["Ipc", "AvgIpc"], 1
+    )[0]
+
+    assert avg_ipc == pytest.approx(_chain_avg_ipc(atoms), rel=1e-12)
+    assert ipc == math.inf

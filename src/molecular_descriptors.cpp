@@ -185,6 +185,7 @@ const QedPatterns& qed_patterns() {
 
 using cuik_molmaker::bond_order_distance_matrix;
 using cuik_molmaker::DescriptorContext;
+using cuik_molmaker::PolynomialMagnitudes;
 
 //! Rejects a molecule with no atoms, for descriptors whose RDKit implementation raises on one.
 void require_atoms(const RDKit::ROMol& mol, const char* descriptor) {
@@ -845,27 +846,28 @@ double rdkit_info_entropy(const std::vector<double>& counts) {
   return accumulated / std::log(2.0);
 }
 
-const std::vector<double>& nonempty_characteristic_polynomial(DescriptorContext& ctx) {
-  const std::vector<double>& coefficients = ctx.characteristic_polynomial();
-  if (coefficients.empty()) {
+const PolynomialMagnitudes& nonempty_characteristic_polynomial(DescriptorContext& ctx) {
+  const PolynomialMagnitudes& coefficients = ctx.characteristic_polynomial();
+  if (coefficients.scaled.empty()) {
     throw std::invalid_argument("Ipc is not defined for a molecule with no atoms");
   }
   return coefficients;
 }
 
-//! `GraphDescriptors.AvgIpc`: entropy of the characteristic polynomial's |coefficients|.
+//! `GraphDescriptors.AvgIpc`: entropy of the characteristic polynomial's |coefficients|,
+//! which their common power-of-two scale does not change.
 double descriptor_avg_ipc(DescriptorContext& ctx) {
-  return rdkit_info_entropy(nonempty_characteristic_polynomial(ctx));
+  return rdkit_info_entropy(nonempty_characteristic_polynomial(ctx).scaled);
 }
 
-//! `GraphDescriptors.Ipc`: their sum times that entropy.
+//! `GraphDescriptors.Ipc`: their sum times that entropy; infinite beyond the double range.
 double descriptor_ipc(DescriptorContext& ctx) {
-  const std::vector<double>& coefficients = nonempty_characteristic_polynomial(ctx);
-  double                     total        = 0.0;
-  for (const double c : coefficients) {
+  const PolynomialMagnitudes& coefficients = nonempty_characteristic_polynomial(ctx);
+  double                      total        = 0.0;
+  for (const double c : coefficients.scaled) {
     total += c;
   }
-  return total * rdkit_info_entropy(coefficients);
+  return std::ldexp(total * rdkit_info_entropy(coefficients.scaled), coefficients.exponent);
 }
 
 //! The fr_* SMARTS, compiled once.

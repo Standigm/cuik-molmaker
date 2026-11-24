@@ -207,7 +207,7 @@ size_t DescriptorContext::morgan_environment_count(unsigned int radius) {
   return *count;
 }
 
-const std::vector<double>& DescriptorContext::characteristic_polynomial() {
+const PolynomialMagnitudes& DescriptorContext::characteristic_polynomial() {
   if (!characteristic_polynomial_) {
     characteristic_polynomial_ = characteristic_polynomial_magnitudes(mol_);
   }

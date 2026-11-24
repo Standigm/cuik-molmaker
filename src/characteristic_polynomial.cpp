@@ -5,9 +5,11 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <boost/multiprecision/cpp_int.hpp>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 
@@ -293,8 +295,10 @@ double coefficient_bits_bound(size_t n, size_t twice_m) {
   return bound;
 }
 
-//! |value| rounded to the nearest double, ties to even -- what Python's float(int) gives.
-double magnitude(BigInt value) {
+//! |value| * 2^-exponent rounded to the nearest double, ties to even. With exponent 0 this
+//! is what Python's float(int) gives; otherwise only results too small to matter next to
+//! the largest coefficient can be rounded twice, on entering the subnormal range.
+double magnitude(BigInt value, int exponent) {
   if (value < 0) {
     value = -value;
   }
@@ -303,7 +307,7 @@ double magnitude(BigInt value) {
   }
   const unsigned int top = boost::multiprecision::msb(value);
   if (top < 64) {
-    return static_cast<double>(static_cast<u64>(value));
+    return std::ldexp(static_cast<double>(static_cast<u64>(value)), -exponent);
   }
   // Keep the leading 64 bits and fold every dropped bit into the lowest one: that bit lies
   // below double's rounding position, so the conversion still rounds exactly.
@@ -312,12 +316,12 @@ double magnitude(BigInt value) {
   if ((value & ((BigInt(1) << shift) - 1)) != 0) {
     head |= 1u;
   }
-  return std::ldexp(static_cast<double>(head), static_cast<int>(shift));
+  return std::ldexp(static_cast<double>(head), static_cast<int>(shift) - exponent);
 }
 
 }  // namespace
 
-std::vector<double> characteristic_polynomial_magnitudes(const RDKit::ROMol& mol) {
+PolynomialMagnitudes characteristic_polynomial_magnitudes(const RDKit::ROMol& mol) {
   const size_t n = mol.getNumAtoms();
   if (n == 0) {
     return {};
@@ -329,8 +333,8 @@ std::vector<double> characteristic_polynomial_magnitudes(const RDKit::ROMol& mol
     neighbours[bond->getEndAtomIdx()].push_back(bond->getBeginAtomIdx());
     twice_m += 2;
   }
-  std::vector<double> result(n + 1, 0.0);
-  result[0] = 1.0;
+  PolynomialMagnitudes result{std::vector<double>(n + 1, 0.0)};
+  result.scaled[0] = 1.0;
   if (twice_m == 0) {
     return result;  // det(x I) = x^n
   }
@@ -358,8 +362,8 @@ std::vector<double> characteristic_polynomial_magnitudes(const RDKit::ROMol& mol
   if (num_primes == 1) {
     const u64 p = PRIMES[0];
     for (size_t k = 0; k <= n; ++k) {
-      const u64 r = residues[n - k];  // c_k multiplies x^(n-k)
-      result[k]   = static_cast<double>(r > p / 2 ? p - r : r);
+      const u64 r      = residues[n - k];  // c_k multiplies x^(n-k)
+      result.scaled[k] = static_cast<double>(r > p / 2 ? p - r : r);
     }
     return result;
   }
@@ -380,9 +384,21 @@ std::vector<double> characteristic_polynomial_magnitudes(const RDKit::ROMol& mol
     modulus *= p;
   }
   const BigInt half = modulus / 2;
+  unsigned int top  = 0;
+  for (BigInt& x : exact) {
+    if (x > half) {
+      x = modulus - x;  // the magnitude of the symmetric residue
+    }
+    if (x != 0) {
+      top = std::max(top, static_cast<unsigned int>(boost::multiprecision::msb(x)));
+    }
+  }
+  // The n + 1 magnitudes sum to less than 2^(top + 1 + bit_width(n + 1)); keep that a factor
+  // of two inside the double range so that rounding cannot overflow either.
+  const int sum_bits = static_cast<int>(top) + 2 + static_cast<int>(std::bit_width(n + 1));
+  result.exponent    = std::max(0, sum_bits - std::numeric_limits<double>::max_exponent);
   for (size_t k = 0; k <= n; ++k) {
-    const BigInt& x = exact[n - k];
-    result[k]       = magnitude(x > half ? BigInt(x - modulus) : x);
+    result.scaled[k] = magnitude(exact[n - k], result.exponent);
   }
   return result;
 }
