@@ -1,15 +1,36 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved. # noqa: E501
 # SPDX-License-Identifier: Apache-2.0
 
+import importlib
 import os
 import platform
 
 # Import compiled extension
 from pathlib import Path
 
-from .mol_features import MoleculeFeaturizer
-from .utils.descriptor_normalization import get_normalization_functions
-from .utils.fit_distribution import best_fit_distribution, get_fast_distribution
+# The Python helpers pull in pandas and scipy.stats, about half a second of import.
+# Callers that only use the compiled entry points -- every worker of a parallel
+# descriptor run -- should not pay it, so these load on first attribute access.
+_LAZY_EXPORTS = {
+    "MoleculeFeaturizer": ".mol_features",
+    "get_normalization_functions": ".utils.descriptor_normalization",
+    "best_fit_distribution": ".utils.fit_distribution",
+    "get_fast_distribution": ".utils.fit_distribution",
+}
+
+
+def __getattr__(name):
+    module_name = _LAZY_EXPORTS.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(importlib.import_module(module_name, __name__), name)
+    globals()[name] = value
+    return value
+
+
+def __dir__():
+    return sorted(set(globals()) | set(_LAZY_EXPORTS))
+
 
 platform_name = platform.system()
 if platform_name == "Windows":

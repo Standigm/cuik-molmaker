@@ -3,11 +3,15 @@
 
 //! @file This header declares whole-molecule descriptors that RDKit implements only in
 //!       Python, plus the batch entry point that computes a descriptor table across
-//!       many SMILES at once. Implementations are in molecular_descriptors.cpp.
+//!       many molecules at once. Implementations are in molecular_descriptors.cpp.
 //!
-//!       RDKit's C++ Descriptors library covers most of `Descriptors._descList`, but
-//!       `BertzCT` and `qed` exist only as Python. They dominate the runtime of a
-//!       selected-descriptor workload, so they are ported here.
+//!       The table covers RDKit's `Descriptors._descList`, plus SAScore. RDKit implements
+//!       part of that list only in Python -- BertzCT, BalabanJ, qed, the E-state family,
+//!       SPS, Chi0/Chi1, the partial-charge extrema and others -- and those are ported with
+//!       their exact arithmetic; the rest call RDKit's C++ with the defaults its Python
+//!       wrappers use. Every value matches RDKit's Python, except that Ipc and AvgIpc come
+//!       from the exact characteristic polynomial (characteristic_polynomial.h), which
+//!       RDKit 2026.03's floating-point recursion matches only up to about 65 atoms.
 
 #pragma once
 
@@ -49,6 +53,7 @@ CUIK_EXPORT double qed_weights_mean(const RDKit::ROMol& mol);
 //!
 //! @param mol Molecule to score
 //! @return The J value, or 0 when the cyclomatic number degenerates
+//! @throws std::invalid_argument if the molecule has no atoms, on which RDKit raises
 CUIK_EXPORT double balaban_j(const RDKit::ROMol& mol);
 
 //! Points the SA score at its fragment table; must be called before `sa_score`.
@@ -76,12 +81,18 @@ CUIK_EXPORT double sa_score(const RDKit::ROMol& mol);
 //! Names accepted by `batch_molecular_descriptors`, in a stable order.
 CUIK_EXPORT std::vector<std::string> list_all_molecular_descriptors();
 
+//! The listed descriptors whose values are counts. The batch entry points return every
+//! value as float64; RDKit's Python returns these as int, so callers matching it convert.
+CUIK_EXPORT std::vector<std::string> list_integer_molecular_descriptors();
+
 //! Computes a descriptor table for a batch of SMILES, one molecule per thread slot.
 //!
 //! Molecules are independent, so the batch is split across threads with the GIL released.
 //! A SMILES that does not parse yields a row of NaN rather than raising, matching the
 //! Python `MoleculeFeaturizer`; a descriptor that rejects a molecule yields NaN for that
-//! cell alone.
+//! cell alone. For a molecule that carries ring information -- any sanitized molecule --
+//! a cell is NaN wherever RDKit's Python raises, so a caller can fall back to RDKit there
+//! and get its exception.
 //!
 //! @param smiles_list SMILES to featurize, one per output row
 //! @param descriptor_names Descriptors to compute, one per output column

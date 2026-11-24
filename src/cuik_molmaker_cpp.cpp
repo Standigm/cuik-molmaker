@@ -133,6 +133,10 @@ PYBIND11_MODULE(cuik_molmaker_cpp, m) {
   m.def("list_all_molecular_descriptors",
         &list_all_molecular_descriptors,
         "Returns the descriptor names accepted by batch_molecular_descriptors.");
+  m.def("list_integer_molecular_descriptors",
+        &list_integer_molecular_descriptors,
+        "Returns the listed descriptors whose values are counts, which RDKit returns as int; the "
+        "batch entry points return them as float64 like every other column.");
   m.def("batch_molecular_descriptors",
         &batch_molecular_descriptors,
         py::arg("smiles_list"),
