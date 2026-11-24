@@ -3,8 +3,9 @@
 
 """Tests for what importing the package costs and exposes.
 
-Parallel callers import the package once per worker process for the compiled entry points
-alone, so the pandas/scipy-backed helpers must not load until something asks for them.
+Parallel callers import the package once per worker process for the compiled entry
+points alone, so the pandas/scipy-backed helpers must not load until something asks for
+them.
 """
 
 import subprocess
@@ -26,7 +27,11 @@ def test_import_defers_the_python_helpers(tmp_path):
         f"print(sorted(m for m in {HEAVY_MODULES!r} if m in sys.modules))\n"
     )
     loaded = subprocess.run(
-        [sys.executable, "-c", probe], capture_output=True, text=True, check=True, cwd=tmp_path
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=tmp_path,
     ).stdout.strip()
     assert loaded == "[]"
 

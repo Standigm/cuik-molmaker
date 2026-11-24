@@ -8,9 +8,9 @@ import platform
 # Import compiled extension
 from pathlib import Path
 
-# The Python helpers pull in pandas and scipy.stats, about half a second of import. Callers
-# that only use the compiled entry points -- every worker of a parallel descriptor run --
-# should not pay it, so these load on first attribute access.
+# The Python helpers pull in pandas and scipy.stats, about half a second of import.
+# Callers that only use the compiled entry points -- every worker of a parallel
+# descriptor run -- should not pay it, so these load on first attribute access.
 _LAZY_EXPORTS = {
     "MoleculeFeaturizer": ".mol_features",
     "get_normalization_functions": ".utils.descriptor_normalization",
